@@ -1,0 +1,390 @@
+{
+  "extraction_id": 29,
+  "timestamp": "2025-06-25T00:16:49.792989",
+  "analysis": {
+    "filename": "tmpefjg62el.png",
+    "radar_type": "RadarType.MODERN_DARK",
+    "extraction_results": {
+      "presentation_mode": {
+        "field_name": "presentation_mode",
+        "value": "NORTH UP",
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "north up",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "heading": {
+        "field_name": "heading",
+        "value": 199.8,
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "199.8",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "speed": {
+        "field_name": "speed",
+        "value": 16.9,
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "16.9",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "cog": {
+        "field_name": "cog",
+        "value": 196.2,
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "196.2",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "sog": {
+        "field_name": "sog",
+        "value": 19.4,
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "19.4",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "position": {
+        "field_name": "position",
+        "value": "30\u00b029.019'N 123\u00b038.735'E",
+        "confidence": 0.81,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "30\u00b029.019'N 123\u00b038.735'E",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "position_source": {
+        "field_name": "position_source",
+        "value": "DGPS",
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "DGPS",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "gain": {
+        "field_name": "gain",
+        "value": 75.0,
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "75",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "sea_clutter": {
+        "field_name": "sea_clutter",
+        "value": 70.0,
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "70",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "rain_clutter": {
+        "field_name": "rain_clutter",
+        "value": 0.0,
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "0",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "tune": {
+        "field_name": "tune",
+        "value": null,
+        "confidence": 0.45,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "None",
+        "processing_time": 0.0,
+        "error": "tune is required but null"
+      },
+      "range": {
+        "field_name": "range",
+        "value": 12.0,
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "12",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "range_rings": {
+        "field_name": "range_rings",
+        "value": 2.0,
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "2",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "cursor_position": {
+        "field_name": "cursor_position",
+        "value": null,
+        "confidence": 0.81,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "None",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "set": {
+        "field_name": "set",
+        "value": 229.3,
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "229.3",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "drift": {
+        "field_name": "drift",
+        "value": 3.1,
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "3.1",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "vector": {
+        "field_name": "vector",
+        "value": "REL",
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "REL",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "vector_duration": {
+        "field_name": "vector_duration",
+        "value": 12.0,
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "12",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "cpa_limit": {
+        "field_name": "cpa_limit",
+        "value": null,
+        "confidence": 0.45,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "None",
+        "processing_time": 0.0,
+        "error": "cpa_limit is required but null"
+      },
+      "tcpa_limit": {
+        "field_name": "tcpa_limit",
+        "value": null,
+        "confidence": 0.45,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "None",
+        "processing_time": 0.0,
+        "error": "tcpa_limit is required but null"
+      },
+      "vrm1": {
+        "field_name": "vrm1",
+        "value": null,
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "None",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "vrm2": {
+        "field_name": "vrm2",
+        "value": null,
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "None",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "index_line_rng": {
+        "field_name": "index_line_rng",
+        "value": null,
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "None",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "index_line_brg": {
+        "field_name": "index_line_brg",
+        "value": null,
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "None",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "ais_on_off": {
+        "field_name": "ais_on_off",
+        "value": "OFF",
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "OFF",
+        "processing_time": 0.0,
+        "error": null
+      },
+      "depth": {
+        "field_name": "depth",
+        "value": null,
+        "confidence": 0.9,
+        "method_used": "ExtractionMethod.AI_VISION",
+        "raw_text": "None",
+        "processing_time": 0.0,
+        "error": null
+      }
+    },
+    "overall_confidence": 0.8411538461538461,
+    "processing_time": 6.981316,
+    "requires_review": true,
+    "validation_errors": [
+      "Large difference between speed (16.9kn) and SOG (19.4kn)"
+    ],
+    "metadata": {
+      "radar_type_confidence": 0.7742409336419753,
+      "extraction_methods_used": [
+        "ai_vision"
+      ],
+      "fields_extracted": 26,
+      "fields_missing": 0
+    }
+  },
+  "extracted_values": {
+    "presentation_mode": {
+      "value": "NORTH UP",
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "heading": {
+      "value": 199.8,
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "speed": {
+      "value": 16.9,
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "cog": {
+      "value": 196.2,
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "sog": {
+      "value": 19.4,
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "position": {
+      "value": "30\u00b029.019'N 123\u00b038.735'E",
+      "confidence": 0.81,
+      "method": "ai_vision"
+    },
+    "position_source": {
+      "value": "DGPS",
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "gain": {
+      "value": 75.0,
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "sea_clutter": {
+      "value": 70.0,
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "rain_clutter": {
+      "value": 0.0,
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "tune": {
+      "value": null,
+      "confidence": 0.45,
+      "method": "ai_vision"
+    },
+    "range": {
+      "value": 12.0,
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "range_rings": {
+      "value": 2.0,
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "cursor_position": {
+      "value": null,
+      "confidence": 0.81,
+      "method": "ai_vision"
+    },
+    "set": {
+      "value": 229.3,
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "drift": {
+      "value": 3.1,
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "vector": {
+      "value": "REL",
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "vector_duration": {
+      "value": 12.0,
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "cpa_limit": {
+      "value": null,
+      "confidence": 0.45,
+      "method": "ai_vision"
+    },
+    "tcpa_limit": {
+      "value": null,
+      "confidence": 0.45,
+      "method": "ai_vision"
+    },
+    "vrm1": {
+      "value": null,
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "vrm2": {
+      "value": null,
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "index_line_rng": {
+      "value": null,
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "index_line_brg": {
+      "value": null,
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "ais_on_off": {
+      "value": "OFF",
+      "confidence": 0.9,
+      "method": "ai_vision"
+    },
+    "depth": {
+      "value": null,
+      "confidence": 0.9,
+      "method": "ai_vision"
+    }
+  }
+}

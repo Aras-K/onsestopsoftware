@@ -1,0 +1,14 @@
+Analyze this marine radar display and extract ALL the following data fields.
+
+IMPORTANT: Look everywhere on the screen including corners, side panels, and overlay windows.
+
+Extract these fields (use the exact field names as keys in your JSON response):
+
+- cog: Look for CSE or CSE or CSE or Course or Course or Course or Course Over Ground or Course Over Ground or Course Over Ground
+- gain: Look for GAIN or GAIN or GAIN or RX Gain or RX Gain or RX Gain or Sensitivity or Sensitivity or Sensitivity
+- heading: Look for Compass or Compass or Compass or HDG or HDG or HDG or HEAD or HEAD or HEAD or Ship Head or Ship Head or Ship Head
+- position: Look for GPS POS or GPS POS or GPS POS or LAT/LON or LAT/LON or LAT/LON or POS or POS or POS or Position or Position or Position
+- rain_clutter: Look for A/C RAIN or A/C RAIN or A/C RAIN or FTC or FTC or FTC or RAIN or RAIN or RAIN or Rain Clutter or Rain Clutter or Rain Clutter
+- sea_clutter: Look for A/C SEA or A/C SEA or A/C SEA or SEA or SEA or SEA or STC or STC or STC or Sea Clutter or Sea Clutter or Sea Clutter
+- sog: Look for GPS Speed or GPS Speed or GPS Speed or Speed OG or Speed OG or Speed OG or Speed Over Ground or Speed Over Ground or Speed Over Ground
+- speed: Look for SPD or SPD or SPD or STW or STW or STW or Speed Through Water or Speed Through Water or Speed Through Water or Vessel Speed or Vessel Speed or Vessel Speed
