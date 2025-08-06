@@ -1,32 +1,34 @@
 # Core dependencies for the web interface
-streamlit
-plotly
-pandas
-pillow
-streamlit-aggrid
-streamlit-image-comparison
-streamlit-extras
+streamlit==1.28.1
+plotly==5.17.0
+pandas==2.0.3
+pillow==10.1.0
+streamlit-aggrid==0.3.4
+streamlit-image-comparison==0.0.4
+streamlit-extras==0.3.5
 
-# Your existing dependencies
-numpy
-opencv-python
-matplotlib
-pytesseract
-anthropic
-openai
-google-generativeai
-tqdm
-colorama
-tabulate
-openpyxl
-# Additional for web app
-python-multipart
-aiofiles
-python-jose
-passlib
-pandas
-pillow
-tabulate
-plotly
-plotly-express
-psycopg2
+# Database - Use binary version for Azure
+psycopg2-binary==2.9.9
+
+# AI/ML APIs
+anthropic==0.61.0
+openai==1.6.1
+google-generativeai==0.8.5
+
+# Image processing
+numpy==1.24.3
+opencv-python-headless==4.8.1.78
+matplotlib==3.7.2
+pytesseract==0.3.10
+
+# Utilities
+tqdm==4.66.1
+colorama==0.4.6
+tabulate==0.9.0
+openpyxl==3.1.2
+
+# Web app additional
+python-multipart==0.0.6
+aiofiles==23.2.1
+python-jose==3.3.0
+passlib==1.7.4
