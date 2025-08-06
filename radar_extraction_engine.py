@@ -17,7 +17,7 @@ import concurrent.futures
 from PIL import Image, ImageEnhance
 import pytesseract
 import re
-from anthropic import Anthropic
+
 from openai import OpenAI
 import google.generativeai as genai
 # Import our architecture (from Step 1)

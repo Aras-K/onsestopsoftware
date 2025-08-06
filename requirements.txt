@@ -18,9 +18,15 @@ google-generativeai
 tqdm
 colorama
 tabulate
-
+openpyxl
 # Additional for web app
 python-multipart
 aiofiles
 python-jose
 passlib
+pandas
+PIL
+tabulate
+plotly
+plotly-express
+plotly-io

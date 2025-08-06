@@ -11,8 +11,8 @@ import sqlite3
 from typing import Dict, List, Tuple
 
 # Import the modules we need
-from inteligentmodels.script.radar_extraction_architecture import RadarType, RADAR_FIELDS
-from inteligentmodels.script.radar_extraction_engine import HybridRadarExtractor
+from radar_extraction_architecture import RadarType, RADAR_FIELDS
+from radar_extraction_engine import HybridRadarExtractor
 
 class QuickAnnotationBuilder:
     """Quick way to build annotations from existing extractions."""
