@@ -1,7 +1,9 @@
-# Hybrid Radar Data Extraction System - Database & Result Management
-# This implements comprehensive database storage, analytics, and review management
+# PostgreSQL Database Manager for Azure Web App Deployment
+# Updated version with PostgreSQL compatibility and connection pooling
 
-import sqlite3
+import psycopg2
+from psycopg2 import pool
+from psycopg2.extras import RealDictCursor
 import json
 import os
 from datetime import datetime, timedelta
@@ -13,8 +15,9 @@ from contextlib import contextmanager
 import hashlib
 import shutil
 from enum import Enum
+from urllib.parse import urlparse
 
-# Import our previous modules
+# Import your previous modules
 from radar_extraction_architecture import (
     ExtractionMethod, RadarType, ExtractionResult, 
     RadarImageAnalysis, RADAR_FIELDS
@@ -54,28 +57,77 @@ class ReviewRecord:
     review_timestamp: datetime
 
 class DatabaseManager:
-    """Manages all database operations for the radar extraction system."""
+    """PostgreSQL database manager for radar extraction system."""
     
-    def __init__(self, db_path: str = "radar_extraction_system.db"):
-        """Initialize database connection and create tables."""
-        self.db_path = db_path
+    def __init__(self, connection_string: str = None):
+        """
+        Initialize PostgreSQL connection pool.
+        
+        Args:
+            connection_string: PostgreSQL connection string. If None, uses environment variable.
+        """
+        # Get connection string from environment if not provided
+        if connection_string is None:
+            connection_string = os.environ.get('DATABASE_URL')
+            if not connection_string:
+                # Fallback to individual parameters from environment
+                connection_string = self._build_connection_string()
+        
+        # Parse connection string for Azure PostgreSQL
+        self.connection_string = self._parse_azure_connection_string(connection_string)
+        
+        # Initialize connection pool
+        self.connection_pool = psycopg2.pool.ThreadedConnectionPool(
+            minconn=1,
+            maxconn=20,
+            dsn=self.connection_string
+        )
+        
+        # Initialize database tables
         self.init_database()
-        logger.info(f"Database initialized at: {db_path}")
+        logger.info("PostgreSQL database initialized successfully")
+    
+    def _build_connection_string(self) -> str:
+        """Build connection string from environment variables."""
+        host = os.environ.get('POSTGRES_HOST', 'localhost')
+        port = os.environ.get('POSTGRES_PORT', '5432')
+        database = os.environ.get('POSTGRES_DB', 'radar_extraction')
+        user = os.environ.get('POSTGRES_USER', 'postgres')
+        password = os.environ.get('POSTGRES_PASSWORD', '')
+        
+        # Azure PostgreSQL specific SSL mode
+        sslmode = os.environ.get('POSTGRES_SSLMODE', 'require')
+        
+        return f"postgresql://{user}:{password}@{host}:{port}/{database}?sslmode={sslmode}"
+    
+    def _parse_azure_connection_string(self, connection_string: str) -> str:
+        """Parse and validate Azure PostgreSQL connection string."""
+        # Azure PostgreSQL often requires SSL
+        if 'sslmode' not in connection_string:
+            if '?' in connection_string:
+                connection_string += '&sslmode=require'
+            else:
+                connection_string += '?sslmode=require'
+        
+        return connection_string
     
     @contextmanager
     def get_connection(self):
-        """Context manager for database connections."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row  # Enable column access by name
+        """Context manager for database connections from pool."""
+        conn = None
         try:
+            conn = self.connection_pool.getconn()
+            conn.autocommit = False
             yield conn
             conn.commit()
         except Exception as e:
-            conn.rollback()
+            if conn:
+                conn.rollback()
             logger.error(f"Database error: {e}")
             raise
         finally:
-            conn.close()
+            if conn:
+                self.connection_pool.putconn(conn)
     
     def init_database(self):
         """Create all necessary tables for the extraction system."""
@@ -85,7 +137,7 @@ class DatabaseManager:
             # Main extraction results table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS extractions (
-                    extraction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    extraction_id SERIAL PRIMARY KEY,
                     filename TEXT NOT NULL,
                     file_hash TEXT NOT NULL,
                     radar_type TEXT NOT NULL,
@@ -95,12 +147,12 @@ class DatabaseManager:
                     requires_review BOOLEAN NOT NULL,
                     extraction_timestamp TIMESTAMP NOT NULL,
                     image_path TEXT,
-                    metadata TEXT,
+                    metadata JSONB,
                     UNIQUE(file_hash)
                 )
             """)
             
-            # Create index for faster queries
+            # Create indexes for faster queries
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_extraction_status 
                 ON extractions(extraction_status)
@@ -111,10 +163,15 @@ class DatabaseManager:
                 ON extractions(requires_review)
             """)
             
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_extraction_timestamp 
+                ON extractions(extraction_timestamp)
+            """)
+            
             # Extracted fields table (normalized)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS extracted_fields (
-                    field_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    field_id SERIAL PRIMARY KEY,
                     extraction_id INTEGER NOT NULL,
                     field_name TEXT NOT NULL,
                     field_value TEXT,
@@ -124,7 +181,7 @@ class DatabaseManager:
                     is_valid BOOLEAN NOT NULL,
                     validation_error TEXT,
                     processing_time REAL,
-                    FOREIGN KEY (extraction_id) REFERENCES extractions(extraction_id),
+                    FOREIGN KEY (extraction_id) REFERENCES extractions(extraction_id) ON DELETE CASCADE,
                     UNIQUE(extraction_id, field_name)
                 )
             """)
@@ -132,49 +189,49 @@ class DatabaseManager:
             # Review queue table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS review_queue (
-                    queue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    queue_id SERIAL PRIMARY KEY,
                     extraction_id INTEGER NOT NULL,
                     priority INTEGER NOT NULL DEFAULT 5,
                     review_status TEXT NOT NULL DEFAULT 'pending',
                     assigned_to TEXT,
                     created_timestamp TIMESTAMP NOT NULL,
                     updated_timestamp TIMESTAMP NOT NULL,
-                    FOREIGN KEY (extraction_id) REFERENCES extractions(extraction_id)
+                    FOREIGN KEY (extraction_id) REFERENCES extractions(extraction_id) ON DELETE CASCADE
                 )
             """)
             
             # Review history table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS review_history (
-                    review_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    review_id SERIAL PRIMARY KEY,
                     extraction_id INTEGER NOT NULL,
                     reviewer_name TEXT NOT NULL,
                     review_status TEXT NOT NULL,
                     review_notes TEXT,
-                    corrections TEXT,
+                    corrections JSONB,
                     review_timestamp TIMESTAMP NOT NULL,
-                    FOREIGN KEY (extraction_id) REFERENCES extractions(extraction_id)
+                    FOREIGN KEY (extraction_id) REFERENCES extractions(extraction_id) ON DELETE CASCADE
                 )
             """)
             
             # Field corrections table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS field_corrections (
-                    correction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    correction_id SERIAL PRIMARY KEY,
                     field_id INTEGER NOT NULL,
                     original_value TEXT,
                     corrected_value TEXT NOT NULL,
                     correction_reason TEXT,
                     corrected_by TEXT NOT NULL,
                     correction_timestamp TIMESTAMP NOT NULL,
-                    FOREIGN KEY (field_id) REFERENCES extracted_fields(field_id)
+                    FOREIGN KEY (field_id) REFERENCES extracted_fields(field_id) ON DELETE CASCADE
                 )
             """)
             
             # Processing statistics table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS processing_stats (
-                    stat_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    stat_id SERIAL PRIMARY KEY,
                     date DATE NOT NULL,
                     total_processed INTEGER DEFAULT 0,
                     successful_extractions INTEGER DEFAULT 0,
@@ -191,7 +248,7 @@ class DatabaseManager:
             # Confidence thresholds configuration
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS confidence_thresholds (
-                    threshold_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    threshold_id SERIAL PRIMARY KEY,
                     field_name TEXT NOT NULL,
                     min_confidence REAL NOT NULL DEFAULT 0.7,
                     review_required_below REAL NOT NULL DEFAULT 0.8,
@@ -204,15 +261,17 @@ class DatabaseManager:
             # Initialize default confidence thresholds
             self._init_confidence_thresholds(cursor)
             
+            conn.commit()
             logger.info("Database tables created successfully")
     
     def _init_confidence_thresholds(self, cursor):
         """Initialize default confidence thresholds for each field."""
         for field_name, field_def in RADAR_FIELDS.items():
             cursor.execute("""
-                INSERT OR IGNORE INTO confidence_thresholds 
+                INSERT INTO confidence_thresholds 
                 (field_name, min_confidence, review_required_below, auto_approve_above, updated_timestamp)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (field_name) DO NOTHING
             """, (
                 field_name,
                 field_def.confidence_threshold,
@@ -220,20 +279,13 @@ class DatabaseManager:
                 0.95,
                 datetime.now()
             ))
+    
     def get_recent_extractions(self, limit: int = 10) -> List[Dict]:
-        """
-        Get the most recent extractions from the database.
-        
-        Args:
-            limit: Maximum number of extractions to return
-            
-        Returns:
-            List of extraction dictionaries with basic information
-        """
+        """Get the most recent extractions from the database."""
         results = []
         
         with self.get_connection() as conn:
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             
             cursor.execute("""
                 SELECT 
@@ -247,30 +299,16 @@ class DatabaseManager:
                     extraction_timestamp
                 FROM extractions
                 ORDER BY extraction_timestamp DESC
-                LIMIT ?
+                LIMIT %s
             """, (limit,))
             
-            # Fetch and convert each row inside the connection context
-            for row in cursor.fetchall():
-                results.append({
-                    'extraction_id': row['extraction_id'],
-                    'filename': row['filename'],
-                    'radar_type': row['radar_type'],
-                    'extraction_status': row['extraction_status'],
-                    'overall_confidence': row['overall_confidence'],
-                    'processing_time': row['processing_time'],
-                    'requires_review': row['requires_review'],
-                    'extraction_timestamp': row['extraction_timestamp']
-                })
+            results = cursor.fetchall()
         
-        return results
+        return [dict(row) for row in results]
     
     def save_extraction_result(self, analysis: RadarImageAnalysis, 
                              image_path: str = None) -> int:
-        """
-        Save extraction results to database.
-        Returns: extraction_id
-        """
+        """Save extraction results to database. Returns: extraction_id"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
@@ -292,13 +330,22 @@ class DatabaseManager:
             else:
                 status = ExtractionStatus.FAILED
             
-            # Insert main extraction record
+            # Insert main extraction record using ON CONFLICT for upsert
             cursor.execute("""
-                INSERT OR REPLACE INTO extractions (
+                INSERT INTO extractions (
                     filename, file_hash, radar_type, extraction_status,
                     overall_confidence, processing_time, requires_review,
                     extraction_timestamp, image_path, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (file_hash) 
+                DO UPDATE SET
+                    extraction_status = EXCLUDED.extraction_status,
+                    overall_confidence = EXCLUDED.overall_confidence,
+                    processing_time = EXCLUDED.processing_time,
+                    requires_review = EXCLUDED.requires_review,
+                    extraction_timestamp = EXCLUDED.extraction_timestamp,
+                    metadata = EXCLUDED.metadata
+                RETURNING extraction_id
             """, (
                 analysis.filename,
                 file_hash,
@@ -312,16 +359,25 @@ class DatabaseManager:
                 json.dumps(analysis.metadata)
             ))
             
-            extraction_id = cursor.lastrowid
+            extraction_id = cursor.fetchone()[0]
             
             # Insert extracted fields
             for field_name, result in analysis.extraction_results.items():
                 cursor.execute("""
-                    INSERT OR REPLACE INTO extracted_fields (
+                    INSERT INTO extracted_fields (
                         extraction_id, field_name, field_value, confidence,
                         extraction_method, raw_text, is_valid, validation_error,
                         processing_time
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (extraction_id, field_name)
+                    DO UPDATE SET
+                        field_value = EXCLUDED.field_value,
+                        confidence = EXCLUDED.confidence,
+                        extraction_method = EXCLUDED.extraction_method,
+                        raw_text = EXCLUDED.raw_text,
+                        is_valid = EXCLUDED.is_valid,
+                        validation_error = EXCLUDED.validation_error,
+                        processing_time = EXCLUDED.processing_time
                 """, (
                     extraction_id,
                     field_name,
@@ -341,7 +397,8 @@ class DatabaseManager:
                     INSERT INTO review_queue (
                         extraction_id, priority, review_status,
                         created_timestamp, updated_timestamp
-                    ) VALUES (?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING
                 """, (
                     extraction_id,
                     priority,
@@ -352,6 +409,8 @@ class DatabaseManager:
             
             # Update daily statistics
             self._update_daily_stats(cursor, analysis)
+            
+            conn.commit()
             
             logger.info(f"Saved extraction result: ID={extraction_id}, "
                        f"Status={status.value}, Confidence={analysis.overall_confidence:.2f}")
@@ -370,9 +429,7 @@ class DatabaseManager:
         return sha256_hash.hexdigest()
     
     def _calculate_review_priority(self, analysis: RadarImageAnalysis) -> int:
-        """
-        Calculate review priority (1-10, 1 being highest priority).
-        """
+        """Calculate review priority (1-10, 1 being highest priority)."""
         priority = 5  # Default medium priority
         
         # Higher priority for lower confidence
@@ -399,70 +456,55 @@ class DatabaseManager:
         """Update daily processing statistics."""
         today = datetime.now().date()
         
-        # Get current stats
+        # Calculate totals for this extraction
+        total_fields = sum(
+            1 for r in analysis.extraction_results.values() 
+            if r.value is not None
+        )
+        
+        # Use PostgreSQL's UPSERT capability
         cursor.execute("""
-            SELECT * FROM processing_stats WHERE date = ?
-        """, (today,))
-        
-        row = cursor.fetchone()
-        
-        if row:
-            # Update existing stats
-            total_fields = sum(
-                1 for r in analysis.extraction_results.values() 
-                if r.value is not None
-            )
-            
-            cursor.execute("""
-                UPDATE processing_stats SET
-                    total_processed = total_processed + 1,
-                    successful_extractions = successful_extractions + ?,
-                    partial_extractions = partial_extractions + ?,
-                    failed_extractions = failed_extractions + ?,
-                    total_fields_extracted = total_fields_extracted + ?,
-                    average_confidence = 
-                        (average_confidence * total_processed + ?) / (total_processed + 1),
-                    average_processing_time = 
-                        (average_processing_time * total_processed + ?) / (total_processed + 1)
-                WHERE date = ?
-            """, (
-                1 if analysis.overall_confidence > 0.8 else 0,
-                1 if 0.3 < analysis.overall_confidence <= 0.8 else 0,
-                1 if analysis.overall_confidence <= 0.3 else 0,
-                total_fields,
-                analysis.overall_confidence,
-                analysis.processing_time,
-                today
-            ))
-        else:
-            # Insert new stats
-            total_fields = sum(
-                1 for r in analysis.extraction_results.values() 
-                if r.value is not None
-            )
-            
-            cursor.execute("""
-                INSERT INTO processing_stats (
-                    date, total_processed, successful_extractions,
-                    partial_extractions, failed_extractions,
-                    total_fields_extracted, average_confidence,
-                    average_processing_time
-                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?)
-            """, (
-                today,
-                1 if analysis.overall_confidence > 0.8 else 0,
-                1 if 0.3 < analysis.overall_confidence <= 0.8 else 0,
-                1 if analysis.overall_confidence <= 0.3 else 0,
-                total_fields,
-                analysis.overall_confidence,
-                analysis.processing_time
-            ))
+            INSERT INTO processing_stats (
+                date, total_processed, successful_extractions,
+                partial_extractions, failed_extractions,
+                total_fields_extracted, average_confidence,
+                average_processing_time
+            ) VALUES (%s, 1, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (date) 
+            DO UPDATE SET
+                total_processed = processing_stats.total_processed + 1,
+                successful_extractions = processing_stats.successful_extractions + %s,
+                partial_extractions = processing_stats.partial_extractions + %s,
+                failed_extractions = processing_stats.failed_extractions + %s,
+                total_fields_extracted = processing_stats.total_fields_extracted + %s,
+                average_confidence = 
+                    (processing_stats.average_confidence * processing_stats.total_processed + %s) 
+                    / (processing_stats.total_processed + 1),
+                average_processing_time = 
+                    (processing_stats.average_processing_time * processing_stats.total_processed + %s) 
+                    / (processing_stats.total_processed + 1)
+        """, (
+            today,
+            1 if analysis.overall_confidence > 0.8 else 0,
+            1 if 0.3 < analysis.overall_confidence <= 0.8 else 0,
+            1 if analysis.overall_confidence <= 0.3 else 0,
+            total_fields,
+            analysis.overall_confidence,
+            analysis.processing_time,
+            # Values for UPDATE clause
+            1 if analysis.overall_confidence > 0.8 else 0,
+            1 if 0.3 < analysis.overall_confidence <= 0.8 else 0,
+            1 if analysis.overall_confidence <= 0.3 else 0,
+            total_fields,
+            analysis.overall_confidence,
+            analysis.processing_time
+        ))
     
     def get_review_queue(self, limit: int = 50, 
                         status: ReviewStatus = ReviewStatus.PENDING) -> List[Dict]:
         """Get items from review queue ordered by priority."""
         with self.get_connection() as conn:
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             
             cursor.execute("""
                 SELECT 
@@ -473,9 +515,9 @@ class DatabaseManager:
                     e.extraction_timestamp
                 FROM review_queue rq
                 JOIN extractions e ON rq.extraction_id = e.extraction_id
-                WHERE rq.review_status = ?
+                WHERE rq.review_status = %s
                 ORDER BY rq.priority ASC, rq.created_timestamp ASC
-                LIMIT ?
+                LIMIT %s
             """, (status.value, limit))
             
             return [dict(row) for row in cursor.fetchall()]
@@ -492,7 +534,7 @@ class DatabaseManager:
                 INSERT INTO review_history (
                     extraction_id, reviewer_name, review_status,
                     review_notes, corrections, review_timestamp
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s)
             """, (
                 extraction_id,
                 reviewer_name,
@@ -505,8 +547,8 @@ class DatabaseManager:
             # Update review queue
             cursor.execute("""
                 UPDATE review_queue 
-                SET review_status = ?, updated_timestamp = ?
-                WHERE extraction_id = ?
+                SET review_status = %s, updated_timestamp = %s
+                WHERE extraction_id = %s
             """, (status.value, datetime.now(), extraction_id))
             
             # Apply corrections if provided
@@ -516,7 +558,7 @@ class DatabaseManager:
                     cursor.execute("""
                         SELECT field_id, field_value 
                         FROM extracted_fields 
-                        WHERE extraction_id = ? AND field_name = ?
+                        WHERE extraction_id = %s AND field_name = %s
                     """, (extraction_id, field_name))
                     
                     row = cursor.fetchone()
@@ -528,7 +570,7 @@ class DatabaseManager:
                             INSERT INTO field_corrections (
                                 field_id, original_value, corrected_value,
                                 correction_reason, corrected_by, correction_timestamp
-                            ) VALUES (?, ?, ?, ?, ?, ?)
+                            ) VALUES (%s, %s, %s, %s, %s, %s)
                         """, (
                             field_id,
                             original_value,
@@ -541,24 +583,26 @@ class DatabaseManager:
                         # Update extracted field
                         cursor.execute("""
                             UPDATE extracted_fields 
-                            SET field_value = ?, confidence = 1.0, is_valid = 1
-                            WHERE field_id = ?
+                            SET field_value = %s, confidence = 1.0, is_valid = true
+                            WHERE field_id = %s
                         """, (str(corrected_value), field_id))
             
             # Update extraction status if approved
             if status == ReviewStatus.APPROVED:
                 cursor.execute("""
                     UPDATE extractions 
-                    SET requires_review = 0 
-                    WHERE extraction_id = ?
+                    SET requires_review = false 
+                    WHERE extraction_id = %s
                 """, (extraction_id,))
             
             # Update daily stats
             cursor.execute("""
                 UPDATE processing_stats 
                 SET reviews_completed = reviews_completed + 1 
-                WHERE date = ?
+                WHERE date = %s
             """, (datetime.now().date(),))
+            
+            conn.commit()
             
             logger.info(f"Review submitted: extraction_id={extraction_id}, "
                        f"status={status.value}, reviewer={reviewer_name}")
@@ -568,18 +612,18 @@ class DatabaseManager:
     def get_extraction_details(self, extraction_id: int) -> Dict:
         """Get complete details for an extraction including all fields."""
         with self.get_connection() as conn:
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             
             # Get main extraction info
             cursor.execute("""
-                SELECT * FROM extractions WHERE extraction_id = ?
+                SELECT * FROM extractions WHERE extraction_id = %s
             """, (extraction_id,))
             
             extraction = dict(cursor.fetchone())
             
             # Get extracted fields
             cursor.execute("""
-                SELECT * FROM extracted_fields WHERE extraction_id = ?
+                SELECT * FROM extracted_fields WHERE extraction_id = %s
                 ORDER BY field_name
             """, (extraction_id,))
             
@@ -587,7 +631,7 @@ class DatabaseManager:
             
             # Get review history
             cursor.execute("""
-                SELECT * FROM review_history WHERE extraction_id = ?
+                SELECT * FROM review_history WHERE extraction_id = %s
                 ORDER BY review_timestamp DESC
             """, (extraction_id,))
             
@@ -599,7 +643,7 @@ class DatabaseManager:
                       end_date: datetime = None) -> Dict:
         """Get processing statistics for a date range."""
         with self.get_connection() as conn:
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             
             if not start_date:
                 start_date = datetime.now() - timedelta(days=30)
@@ -615,9 +659,9 @@ class DatabaseManager:
                     SUM(CASE WHEN extraction_status = 'success' THEN 1 ELSE 0 END) as successful,
                     SUM(CASE WHEN extraction_status = 'partial' THEN 1 ELSE 0 END) as partial,
                     SUM(CASE WHEN extraction_status = 'failed' THEN 1 ELSE 0 END) as failed,
-                    SUM(CASE WHEN requires_review = 1 THEN 1 ELSE 0 END) as pending_review
+                    SUM(CASE WHEN requires_review = true THEN 1 ELSE 0 END) as pending_review
                 FROM extractions
-                WHERE extraction_timestamp BETWEEN ? AND ?
+                WHERE extraction_timestamp BETWEEN %s AND %s
             """, (start_date, end_date))
             
             overall = dict(cursor.fetchone())
@@ -628,11 +672,11 @@ class DatabaseManager:
                     field_name,
                     COUNT(*) as extraction_count,
                     AVG(confidence) as avg_confidence,
-                    SUM(CASE WHEN is_valid = 1 THEN 1 ELSE 0 END) as valid_count,
+                    SUM(CASE WHEN is_valid = true THEN 1 ELSE 0 END) as valid_count,
                     COUNT(DISTINCT extraction_method) as methods_used
                 FROM extracted_fields ef
                 JOIN extractions e ON ef.extraction_id = e.extraction_id
-                WHERE e.extraction_timestamp BETWEEN ? AND ?
+                WHERE e.extraction_timestamp BETWEEN %s AND %s
                 GROUP BY field_name
                 ORDER BY avg_confidence DESC
             """, (start_date, end_date))
@@ -645,10 +689,10 @@ class DatabaseManager:
                     extraction_method,
                     COUNT(*) as usage_count,
                     AVG(confidence) as avg_confidence,
-                    SUM(CASE WHEN is_valid = 1 THEN 1 ELSE 0 END) as success_count
+                    SUM(CASE WHEN is_valid = true THEN 1 ELSE 0 END) as success_count
                 FROM extracted_fields ef
                 JOIN extractions e ON ef.extraction_id = e.extraction_id
-                WHERE e.extraction_timestamp BETWEEN ? AND ?
+                WHERE e.extraction_timestamp BETWEEN %s AND %s
                 GROUP BY extraction_method
             """, (start_date, end_date))
             
@@ -661,7 +705,7 @@ class DatabaseManager:
                     COUNT(*) as count,
                     AVG(overall_confidence) as avg_confidence
                 FROM extractions
-                WHERE extraction_timestamp BETWEEN ? AND ?
+                WHERE extraction_timestamp BETWEEN %s AND %s
                 GROUP BY radar_type
             """, (start_date, end_date))
             
@@ -681,7 +725,7 @@ class DatabaseManager:
     def get_failed_extractions(self, limit: int = 100) -> List[Dict]:
         """Get failed or low-confidence extractions for reprocessing."""
         with self.get_connection() as conn:
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             
             cursor.execute("""
                 SELECT 
@@ -697,7 +741,7 @@ class DatabaseManager:
                    OR extraction_status = 'partial'
                    OR overall_confidence < 0.7
                 ORDER BY overall_confidence ASC
-                LIMIT ?
+                LIMIT %s
             """, (limit,))
             
             return [dict(row) for row in cursor.fetchall()]
@@ -707,13 +751,14 @@ class DatabaseManager:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
-            placeholders = ','.join('?' * len(extraction_ids))
-            cursor.execute(f"""
+            # Use ANY for PostgreSQL array parameter
+            cursor.execute("""
                 UPDATE extractions 
                 SET extraction_status = 'reprocessing' 
-                WHERE extraction_id IN ({placeholders})
-            """, extraction_ids)
+                WHERE extraction_id = ANY(%s)
+            """, (extraction_ids,))
             
+            conn.commit()
             logger.info(f"Marked {len(extraction_ids)} extractions for reprocessing")
     
     def export_to_csv(self, output_path: str, start_date: datetime = None,
@@ -742,26 +787,36 @@ class DatabaseManager:
                     ef.is_valid
                 FROM extractions e
                 LEFT JOIN extracted_fields ef ON e.extraction_id = ef.extraction_id
-                WHERE e.extraction_timestamp BETWEEN ? AND ?
+                WHERE e.extraction_timestamp BETWEEN %s AND %s
                 ORDER BY e.extraction_id, ef.field_name
             """
             
             df = pd.read_sql_query(query, conn, params=(start_date, end_date))
             
             # Pivot to have one row per extraction with fields as columns
-            pivot_df = df.pivot_table(
-                index=['extraction_id', 'filename', 'radar_type', 
-                       'extraction_status', 'overall_confidence', 
-                       'processing_time', 'extraction_timestamp'],
-                columns='field_name',
-                values='field_value',
-                aggfunc='first'
-            ).reset_index()
+            if not df.empty and 'field_name' in df.columns:
+                pivot_df = df.pivot_table(
+                    index=['extraction_id', 'filename', 'radar_type', 
+                           'extraction_status', 'overall_confidence', 
+                           'processing_time', 'extraction_timestamp'],
+                    columns='field_name',
+                    values='field_value',
+                    aggfunc='first'
+                ).reset_index()
+            else:
+                pivot_df = df
             
             # Save to CSV
             pivot_df.to_csv(output_path, index=False)
             logger.info(f"Exported {len(pivot_df)} extractions to {output_path}")
+    
+    def close(self):
+        """Close all database connections in the pool."""
+        if hasattr(self, 'connection_pool'):
+            self.connection_pool.closeall()
+            logger.info("Database connection pool closed")
 
+# Keep ResultManager class unchanged as it works with the interface
 class ResultManager:
     """High-level manager for extraction results and workflows."""
     
@@ -786,10 +841,7 @@ class ResultManager:
     
     def process_extraction_result(self, analysis: RadarImageAnalysis, 
                                 image_path: str) -> int:
-        """
-        Process and save extraction result with appropriate filing.
-        Returns: extraction_id
-        """
+        """Process and save extraction result with appropriate filing."""
         # Save to database
         extraction_id = self.db.save_extraction_result(analysis, image_path)
         
@@ -920,58 +972,3 @@ class ResultManager:
         self.db.export_to_csv(export_path, start_date, end_date)
         
         return export_path
-
-# Example usage and testing
-def test_database_system():
-    """Test the database system with sample data."""
-    # Initialize database
-    db = DatabaseManager("test_radar_extraction.db")
-    result_manager = ResultManager(db)
-    
-    # Create sample extraction result
-    from radar_extraction_architecture import ExtractionMethod
-    
-    sample_analysis = RadarImageAnalysis(
-        filename="test_radar_001.png",
-        radar_type=RadarType.FURUNO_CLASSIC,
-        extraction_results={
-            "heading": ExtractionResult(
-                field_name="heading",
-                value=327.5,
-                confidence=0.95,
-                method_used=ExtractionMethod.AI_VISION,
-                raw_text="327.5°"
-            ),
-            "speed": ExtractionResult(
-                field_name="speed",
-                value=9.7,
-                confidence=0.88,
-                method_used=ExtractionMethod.AI_VISION,
-                raw_text="9.7kn"
-            )
-        },
-        overall_confidence=0.91,
-        processing_time=3.45,
-        requires_review=False,
-        validation_errors=[],
-        metadata={"test": True}
-    )
-    
-    # Save result
-    extraction_id = result_manager.process_extraction_result(
-        sample_analysis, 
-        "test_image.png"
-    )
-    
-    print(f"Saved extraction with ID: {extraction_id}")
-    
-    # Get statistics
-    stats = db.get_statistics()
-    print(f"\nStatistics: {json.dumps(stats, indent=2)}")
-    
-    # Generate report
-    report_path = result_manager.generate_daily_report()
-    print(f"\nGenerated report: {report_path}")
-
-if __name__ == "__main__":
-    test_database_system()

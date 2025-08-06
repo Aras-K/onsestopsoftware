@@ -1,6 +1,4 @@
-
-from dotenv import load_dotenv
-# Hybrid Radar Data Extraction System - Core Engine
+# Hybrid Radar Data Extraction System - Core Engine (Azure Compatible)
 # This implements the main extraction logic with multiple methods
 
 import os
@@ -17,20 +15,18 @@ import concurrent.futures
 from PIL import Image, ImageEnhance
 import pytesseract
 import re
+import platform
+import subprocess
 
 from openai import OpenAI
 import google.generativeai as genai
-# Import our architecture (from Step 1)
-from radar_extraction_architecture import (ExtractionMethod, RadarType, FieldDefinition, 
+
+# Import our architecture
+from radar_extraction_architecture import (
+    ExtractionMethod, RadarType, FieldDefinition, 
     ExtractionResult, RadarImageAnalysis, RADAR_FIELDS,
     RADAR_TYPE_FEATURES, SystemConfig
 )
-from intelligent_learning_system import IntelligentLearningSystem, AdaptiveExtractionEngine
-
-# Configure Tesseract IMMEDIATELY
-import pytesseract
-pytesseract.pytesseract.tesseract_cmd = r"C:\Users\aras.koplanto\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
-
 
 # Configure logging with detailed formatting
 logging.basicConfig(
@@ -41,24 +37,50 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
-load_dotenv()
-
 logger = logging.getLogger(__name__)
-import pytesseract
-import platform
 
-if platform.system() == 'Windows':
-    # Try common installation paths
-    tesseract_paths = [
-        r'C:\Program Files\Tesseract-OCR\tesseract.exe',
-        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
-        r'C:\Users\%s\AppData\Local\Tesseract-OCR\tesseract.exe' % os.environ.get('USERNAME', ''),
-    ]
+# Configure Tesseract for Azure environment
+def configure_tesseract():
+    """Configure Tesseract OCR for the current environment."""
+    # Check if running on Azure (Linux container)
+    if platform.system() == 'Linux':
+        # Azure App Service Linux container
+        tesseract_cmd = 'tesseract'
+        
+        # Check if tesseract is installed
+        try:
+            subprocess.run(['which', 'tesseract'], check=True, capture_output=True)
+            pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+            logger.info(f"Tesseract configured for Linux: {tesseract_cmd}")
+        except subprocess.CalledProcessError:
+            logger.warning("Tesseract not found. Installing may be required.")
+            # In Azure, you might need to install it in your startup script
+            
+    elif platform.system() == 'Windows':
+        # Local Windows development
+        tesseract_paths = [
+            r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+            r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
+            os.path.expandvars(r'%LOCALAPPDATA%\Tesseract-OCR\tesseract.exe'),
+            os.path.expandvars(r'%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe'),
+        ]
+        
+        for path in tesseract_paths:
+            if os.path.exists(path):
+                pytesseract.pytesseract.tesseract_cmd = path
+                logger.info(f"Tesseract configured for Windows: {path}")
+                break
+        else:
+            logger.warning("Tesseract not found on Windows. OCR features may not work.")
     
-    for path in tesseract_paths:
-        if os.path.exists(path):
-            print(f"Found Tesseract at: {path}")
-            break
+    else:
+        # Mac or other Unix-like systems
+        pytesseract.pytesseract.tesseract_cmd = 'tesseract'
+        logger.info("Tesseract configured for Unix-like system")
+
+# Initialize Tesseract configuration
+configure_tesseract()
+
 class RadarTypeDetector:
     """Detects the type of radar display using computer vision techniques."""
     
@@ -177,100 +199,109 @@ class ImagePreprocessor:
 class AIVisionExtractor:
     """Handles extraction using AI vision APIs (Claude, GPT-4V, Gemini)."""
     
-    def __init__(self, api_keys: Dict[str, str]):
-        """Initialize AI clients with API keys."""
+    def __init__(self, api_keys: Dict[str, str] = None):
+        """Initialize AI clients with API keys from environment or parameters."""
         self.clients = {}
         
+        # Use environment variables if api_keys not provided
+        if api_keys is None:
+            api_keys = {
+                'openai': os.environ.get('OPENAI_API_KEY'),
+                'google': os.environ.get('GOOGLE_API_KEY'),
+                'anthropic': os.environ.get('ANTHROPIC_API_KEY')
+            }
         
-        if 'openai' in api_keys:
-            self.clients['gpt4v'] = OpenAI(api_key=api_keys['openai'])
+        # Initialize OpenAI client
+        if api_keys.get('openai'):
+            try:
+                self.clients['gpt4v'] = OpenAI(api_key=api_keys['openai'])
+                logger.info("OpenAI client initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize OpenAI client: {e}")
         
-        if 'google' in api_keys:
-            genai.configure(api_key="AIzaSyAmVErAULHfk-dUrqennuh3ORevv37gJjk")
-            self.clients['gemini'] = genai.GenerativeModel('gemini-1.5-pro-latest')
+        # Initialize Google Gemini client
+        if api_keys.get('google'):
+            try:
+                genai.configure(api_key=api_keys['google'])
+                self.clients['gemini'] = genai.GenerativeModel('gemini-1.5-pro-latest')
+                logger.info("Gemini client initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Gemini client: {e}")
+        
+        if not self.clients:
+            logger.warning("No AI vision clients initialized. AI extraction will not be available.")
     
     def create_extraction_prompt(self, radar_type: RadarType, target_fields: List[str] = None) -> str:
-        # First try to use enhanced prompt from learning system
-        if hasattr(self, 'learning_system'):
-            weak_fields = self.get_weak_fields()
-            return self.adaptive_engine.get_enhanced_prompt(
-                radar_type.value, 
-                weak_fields
-            )
-        
-        # Fallback to enhanced config if available
-        if os.path.exists('enhanced_extraction_config.json'):
-            with open('enhanced_extraction_config.json', 'r') as f:
-                config = json.load(f)
-            return config['enhanced_prompt']
-        
-        # Otherwise use your detailed prompt
+        """Create the extraction prompt for AI models."""
         if target_fields is None:
             target_fields = list(RADAR_FIELDS.keys())
         
         prompt = f"""Analyze this {radar_type.value} marine radar display image and extract ALL the following data fields.
 
-                CRITICAL INSTRUCTIONS - READ CAREFULLY:
+CRITICAL INSTRUCTIONS - READ CAREFULLY:
 
-            1. "presentation_mode": "READ THE ACTUAL TEXT - look for 'NORTH UP', 'N UP', 'HEAD UP', 'H UP' text on screen - DO NOT GUESS!",
+1. "presentation_mode": "READ THE ACTUAL TEXT - look for 'NORTH UP', 'N UP', 'HEAD UP', 'H UP' text on screen - DO NOT GUESS!",
 
-            2. COG vs SOG - DO NOT CONFUSE THESE:
-            - COG (Course Over Ground) = Direction of movement in degrees (000-360)
-            - SOG (Speed Over Ground) = Speed of movement in knots (typically 0-30)
-            - COG is ALWAYS a bearing/direction (degrees)
-            - SOG is ALWAYS a speed (knots)
-            - Look for labels like "COG", "SOG", "GND CRS", "GND SPD"
+2. COG vs SOG - DO NOT CONFUSE THESE:
+   - COG (Course Over Ground) = Direction of movement in degrees (000-360)
+   - SOG (Speed Over Ground) = Speed of movement in knots (typically 0-30)
+   - COG is ALWAYS a bearing/direction (degrees)
+   - SOG is ALWAYS a speed (knots)
+   - Look for labels like "COG", "SOG", "GND CRS", "GND SPD"
 
-            3. GAIN/SEA/RAIN CLUTTER:
-            - These are often shown as BARS or PERCENTAGE indicators
-            - Look for labels: "GAIN", "SEA", "RAIN", "A/C SEA", "A/C RAIN"
-            - May be in a control panel area or side menu
-            - Values are 0-100 (percentage)
-            - If shown as a bar, estimate the percentage filled
+3. GAIN/SEA/RAIN CLUTTER:
+   - These are often shown as BARS or PERCENTAGE indicators
+   - Look for labels: "GAIN", "SEA", "RAIN", "A/C SEA", "A/C RAIN"
+   - May be in a control panel area or side menu
+   - Values are 0-100 (percentage)
+   - If shown as a bar, estimate the percentage filled
 
-            Return ONLY a JSON object with these exact field names (use lowercase with underscores):
-            {{
-            "presentation_mode": "IN THE DISPLAY ORIENTATION INDICATOR",
-            "heading": "ship heading in degrees (HDG)",
-            "speed": "ship speed through water in knots (SPD)",
-            "cog": "course over ground in DEGREES (not speed!)",
-            "sog": "speed over ground in KNOTS (not direction!)",
-            "position": "exact position as shown",
-            "position_source": "GPS/DGPS/GNSS",
-            "gain": "gain percentage 0-100 (look for GAIN control/bar)",
-            "sea_clutter": "sea clutter percentage 0-100 (look for SEA or A/C SEA)",
-            "rain_clutter": "rain clutter percentage 0-100 (look for RAIN or A/C RAIN)",
-            "tune": "tune percentage if visible",
-            "range": "radar range in NM",
-            "range_rings": "range ring interval",
-            "cursor_position": "cursor position if visible",
-            "set": "current set direction in degrees, YOU CAN FIND IT IN THE HEADING AND SPEED SECTION",
-            "drift": "current drift speed in knots",
-            "vector": "vector mode TRUE/REL/OFF",
-            "vector_duration": "vector time in minutes",
-            "cpa_limit": "CPA limit in NM",
-            "tcpa_limit": "TCPA limit in minutes",
-            "vrm1": "VRM1 distance if visible",
-            "vrm2": "VRM2 distance if visible",
-            "index_line_rng": "index line range",
-            "index_line_brg": "index line bearing",
-            "ais_on_off": "AIS status ON/OFF, do not include SLEEPING",
-            "depth": "water depth in meters"
-            }}
+Return ONLY a JSON object with these exact field names (use lowercase with underscores):
+{{
+  "presentation_mode": "IN THE DISPLAY ORIENTATION INDICATOR",
+  "heading": "ship heading in degrees (HDG)",
+  "speed": "ship speed through water in knots (SPD)",
+  "cog": "course over ground in DEGREES (not speed!)",
+  "sog": "speed over ground in KNOTS (not direction!)",
+  "position": "exact position as shown",
+  "position_source": "GPS/DGPS/GNSS",
+  "gain": "gain percentage 0-100 (look for GAIN control/bar)",
+  "sea_clutter": "sea clutter percentage 0-100 (look for SEA or A/C SEA)",
+  "rain_clutter": "rain clutter percentage 0-100 (look for RAIN or A/C RAIN)",
+  "tune": "tune percentage if visible",
+  "range": "radar range in NM",
+  "range_rings": "range ring interval",
+  "cursor_position": "cursor position if visible",
+  "set": "current set direction in degrees",
+  "drift": "current drift speed in knots",
+  "vector": "vector mode TRUE/REL/OFF",
+  "vector_duration": "vector time in minutes",
+  "cpa_limit": "CPA limit in NM",
+  "tcpa_limit": "TCPA limit in minutes",
+  "vrm1": "VRM1 distance if visible",
+  "vrm2": "VRM2 distance if visible",
+  "index_line_rng": "index line range",
+  "index_line_brg": "index line bearing",
+  "ais_on_off": "AIS status ON/OFF",
+  "depth": "water depth in meters"
+}}
 
-            IMPORTANT REMINDERS:
-            - COG is a DIRECTION (degrees), SOG is a SPEED (knots) - never swap them SOG cannot be more then 50!
-            - Read PRESENTATION MODE from the actual indicator, not from display appearance
-            - GAIN/SEA/RAIN are often shown as bars - estimate percentage
-            - Use null for fields not visible
-            - Extract numbers only (no units)"""
-                
-        return prompt
+IMPORTANT REMINDERS:
+- COG is a DIRECTION (degrees), SOG is a SPEED (knots) - never swap them
+- Read PRESENTATION MODE from the actual indicator, not from display appearance
+- GAIN/SEA/RAIN are often shown as bars - estimate percentage
+- Use null for fields not visible
+- Extract numbers only (no units)"""
         
-      
+        return prompt
+    
     async def extract_with_gemini(self, image_path: str, radar_type: RadarType,
                                 target_fields: List[str] = None) -> Dict[str, Any]:
         """Extract data using Google Gemini Vision API."""
+        if 'gemini' not in self.clients:
+            logger.warning("Gemini client not available")
+            return {}
+            
         try:
             img = Image.open(image_path)
             prompt = self.create_extraction_prompt(radar_type, target_fields)
@@ -293,61 +324,20 @@ class AIVisionExtractor:
         except Exception as e:
             logger.error(f"Gemini extraction error: {e}")
             return {}
-    async def extract_with_claude(self, image_path: str, radar_type: RadarType, 
-                                 target_fields: List[str] = None) -> Dict[str, Any]:
-        """Extract data using Claude Vision API."""
-        try:
-            with open(image_path, 'rb') as f:
-                image_data = base64.b64encode(f.read()).decode('utf-8')
-            
-            prompt = self.create_extraction_prompt(radar_type, target_fields)
-            
-            message = self.clients['claude'].messages.create(
-                model="claude-3-sonnet-20240229",
-                max_tokens=2048,
-                temperature=0,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/png",
-                                "data": image_data
-                            }
-                        },
-                        {
-                            "type": "text",
-                            "text": prompt
-                        }
-                    ]
-                }]
-            )
-            
-            # Parse response
-            response_text = message.content[0].text.strip()
-            
-            # Clean up response if needed
-            if response_text.startswith("```json"):
-                response_text = response_text[7:-3]
-            
-            return json.loads(response_text)
-            
-        except Exception as e:
-            logger.error(f"Claude extraction error: {e}")
-            return {}
     
     async def extract_with_gpt4v(self, image_path: str, radar_type: RadarType,
                                 target_fields: List[str] = None) -> Dict[str, Any]:
         """Extract data using GPT-4 Vision API."""
+        if 'gpt4v' not in self.clients:
+            logger.warning("GPT-4V client not available")
+            return {}
+            
         try:
             # Open and potentially convert the image
-            from PIL import Image as PILImage
             import io
             
-            with PILImage.open(image_path) as img:
-                # Convert to RGB if necessary (removes alpha channel, converts from grayscale, etc.)
+            with Image.open(image_path) as img:
+                # Convert to RGB if necessary
                 if img.mode not in ('RGB', 'L'):
                     img = img.convert('RGB')
                 
@@ -390,89 +380,12 @@ class AIVisionExtractor:
             logger.error(f"GPT-4V extraction error: {e}")
             return {}
 
-    
-    async def extract_batch(self, image_paths: List[str], 
-                          max_workers: int = 4) -> List[RadarImageAnalysis]:
-        """Extract data from multiple images in parallel."""
-        logger.info(f"Starting batch extraction for {len(image_paths)} images")
-        
-        # Process in batches to avoid overwhelming APIs
-        results = []
-        
-        for i in range(0, len(image_paths), max_workers):
-            batch = image_paths[i:i + max_workers]
-            batch_tasks = [self.extract_image(path) for path in batch]
-            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
-            
-            for path, result in zip(batch, batch_results):
-                if isinstance(result, Exception):
-                    logger.error(f"Failed to process {path}: {result}")
-                    # Create a failed result
-                    results.append(RadarImageAnalysis(
-                        filename=os.path.basename(path),
-                        radar_type=RadarType.UNKNOWN,
-                        extraction_results={},
-                        overall_confidence=0.0,
-                        processing_time=0.0,
-                        requires_review=True,
-                        validation_errors=[str(result)],
-                        metadata={'error': str(result)}
-                    ))
-                else:
-                    results.append(result)
-        
-        return results
-
-# Utility functions for testing
-def save_results(analysis: RadarImageAnalysis, output_dir: str):
-    """Save extraction results to JSON file."""
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Convert to dictionary
-    result_dict = asdict(analysis)
-    
-    # Convert ExtractionResult objects
-    result_dict['extraction_results'] = {
-        field: asdict(result) 
-        for field, result in analysis.extraction_results.items()
-    }
-    
-    # Save to file
-    output_path = os.path.join(output_dir, f"{analysis.filename}_results.json")
-    with open(output_path, 'w') as f:
-        json.dump(result_dict, f, indent=2, default=str)
-    
-    logger.info(f"Results saved to: {output_path}")
-
-async def test_single_image(image_path: str, api_keys: Dict[str, str]):
-    """Test extraction on a single image."""
-    extractor = HybridRadarExtractor(api_keys)
-    result = await extractor.extract_image(image_path)
-    
-    print(f"\n=== Extraction Results for {result.filename} ===")
-    print(f"Radar Type: {result.radar_type.value}")
-    print(f"Overall Confidence: {result.overall_confidence:.2%}")
-    print(f"Processing Time: {result.processing_time:.2f}s")
-    print(f"Requires Review: {result.requires_review}")
-    
-    print("\nExtracted Fields:")
-    for field_name, extraction in result.extraction_results.items():
-        print(f"  {field_name}: {extraction.value} "
-              f"(confidence: {extraction.confidence:.2%}, "
-              f"method: {extraction.method_used.value})")
-    
-    if result.validation_errors:
-        print("\nValidation Warnings:")
-        for warning in result.validation_errors:
-            print(f"  - {warning}")
-    
-    return result
-
 class OCRExtractor:
     """Specialized OCR extraction for specific fields."""
     
     def __init__(self):
         """Initialize OCR engines."""
+        self.tesseract_available = self._check_tesseract()
         self.tesseract_config = {
             'numeric': '--psm 7 -c tessedit_char_whitelist=0123456789.',
             'alphanumeric': '--psm 7',
@@ -480,9 +393,21 @@ class OCRExtractor:
             'sparse_text': '--psm 11'
         }
     
+    def _check_tesseract(self) -> bool:
+        """Check if Tesseract is available."""
+        try:
+            pytesseract.get_tesseract_version()
+            return True
+        except Exception as e:
+            logger.warning(f"Tesseract not available: {e}")
+            return False
+    
     def extract_from_roi(self, image: np.ndarray, roi: Tuple[int, int, int, int],
                         field_type: str = 'alphanumeric') -> str:
         """Extract text from a specific region of interest."""
+        if not self.tesseract_available:
+            return ""
+            
         try:
             x1, y1, x2, y2 = roi
             roi_image = image[y1:y2, x1:x2]
@@ -511,6 +436,9 @@ class OCRExtractor:
     def extract_field(self, image: np.ndarray, field_name: str, 
                      radar_type: RadarType) -> Optional[str]:
         """Extract a specific field using OCR."""
+        if not self.tesseract_available:
+            return None
+            
         if field_name not in RADAR_FIELDS:
             return None
         
@@ -552,9 +480,9 @@ class ValidationEngine:
         # Convert to string for processing
         str_value = str(value).strip()
         
-        # Handle numeric fields (including those with units)
+        # Handle numeric fields
         if field_def.data_type in ['numeric', 'bearing', 'speed']:
-            # Extract numeric value, handling various formats
+            # Extract numeric value
             numeric_patterns = [
                 r'^(-?\d+\.?\d*)\s*(?:kn|kt|knots|KN|KT|KNOTS)?$',  # Speed
                 r'^(-?\d+\.?\d*)\s*(?:°|deg|degrees|DEG)?$',         # Bearing
@@ -582,7 +510,7 @@ class ValidationEngine:
                     except ValueError:
                         continue
             
-            # If no pattern matched, try one more time with a looser pattern
+            # Try loose pattern
             loose_match = re.search(r'(-?\d+\.?\d*)', str_value)
             if loose_match:
                 try:
@@ -592,55 +520,37 @@ class ValidationEngine:
                     
             return False, None, f"{field_name} not numeric: {str_value}"
         
-        # Handle text fields with common variations
+        # Handle text fields
         if field_def.data_type == 'text':
             cleaned = str_value.upper().strip()
             
-            # FIXED: Presentation mode variations
+            # Presentation mode
             if field_name == 'presentation_mode':
-                # Log for debugging
-                logger.info(f"Processing presentation_mode: original='{str_value}', cleaned='{cleaned}'")
-                
-                # Remove common prefixes/noise
-                mode_text = cleaned
-                # Remove "PRESENTATION MODE:" or similar prefixes
-                mode_text = re.sub(r'^.*MODE\s*:\s*', '', mode_text)
-                mode_text = re.sub(r'^.*:\s*', '', mode_text)  # Remove any prefix with colon
+                mode_text = re.sub(r'^.*MODE\s*:\s*', '', cleaned)
+                mode_text = re.sub(r'^.*:\s*', '', mode_text)
                 mode_text = mode_text.strip()
                 
-                # Check for exact matches first (with word boundaries to avoid partial matches)
                 if re.search(r'\bNORTH\s*UP\b', mode_text) or re.search(r'\bN\s*UP\b', mode_text):
                     value = "NORTH UP"
-                elif re.search(r'\bHEAD\s*UP\b', mode_text) or re.search(r'\bH\s*UP\b', mode_text) or re.search(r'\bHDG\s*UP\b', mode_text):
+                elif re.search(r'\bHEAD\s*UP\b', mode_text) or re.search(r'\bH\s*UP\b', mode_text):
                     value = "HEAD UP"
-                elif re.search(r'\bCOURSE\s*UP\b', mode_text) or re.search(r'\bC\s*UP\b', mode_text) or re.search(r'\bCRS\s*UP\b', mode_text):
-                    value = "COURSE UP"
-                # Fallback to checking individual words (but be more careful)
-                elif 'NORTH' in mode_text and not any(x in mode_text for x in ['HEAD', 'COURSE']):
-                    value = "NORTH UP"
-                elif 'HEAD' in mode_text and not any(x in mode_text for x in ['NORTH', 'COURSE']):
-                    value = "HEAD UP"
-                elif 'COURSE' in mode_text and not any(x in mode_text for x in ['NORTH', 'HEAD']):
+                elif re.search(r'\bCOURSE\s*UP\b', mode_text) or re.search(r'\bC\s*UP\b', mode_text):
                     value = "COURSE UP"
                 else:
-                    # Can't determine - keep original
                     value = str_value
-                    logger.warning(f"Could not parse presentation_mode: '{mode_text}'")
                 
-                # Check for RM/TM suffix in original cleaned text
                 if ' RM' in cleaned or cleaned.endswith('RM'):
                     value += " RM"
                 elif ' TM' in cleaned or cleaned.endswith('TM'):
                     value += " TM"
                 
-                logger.info(f"Presentation_mode result: '{value}'")
                 return True, value, ""
             
-            # AIS status variations
+            # AIS status
             elif field_name == 'ais_on_off':
-                if cleaned in ['ON', 'AIS ON', 'AIS: ON', 'ENABLED'] or ('ON' in cleaned and 'OFF' not in cleaned):
+                if 'ON' in cleaned and 'OFF' not in cleaned:
                     return True, "ON", ""
-                elif cleaned in ['OFF', 'AIS OFF', 'AIS: OFF', 'DISABLED'] or 'OFF' in cleaned:
+                elif 'OFF' in cleaned:
                     return True, "OFF", ""
             
             # Vector mode
@@ -661,36 +571,35 @@ class ValidationEngine:
                 elif 'GNSS' in cleaned:
                     return True, "GNSS", ""
         
-        # Coordinate validation (position, cursor_position)
+        # Coordinate validation
         if field_def.data_type == 'coordinate':
-            # Accept various position formats
             if re.search(r'\d+.*[NS].*\d+.*[EW]', str_value, re.IGNORECASE):
                 return True, str_value, ""
         
-        # Default: accept the value if we couldn't parse it
+        # Default: accept the value
         return True, str_value, ""
     
     def cross_field_validation(self, data: Dict[str, Any]) -> List[str]:
         """Perform validation across multiple fields."""
         warnings = []
         
-        # Example: COG should be similar to heading when moving
+        # COG vs heading validation
         if 'heading' in data and 'cog' in data and 'speed' in data:
-            if data['speed'] and float(data['speed']) > 1.0:  # Moving
+            if data['speed'] and float(data['speed']) > 1.0:
                 heading = float(data['heading']) if data['heading'] else 0
                 cog = float(data['cog']) if data['cog'] else 0
                 diff = abs(heading - cog)
                 if diff > 180:
                     diff = 360 - diff
-                if diff > 30:  # More than 30 degrees difference
+                if diff > 30:
                     warnings.append(f"Large difference between heading ({heading}°) and COG ({cog}°)")
         
-        # Example: SOG and Speed should be similar
+        # SOG vs Speed validation
         if 'speed' in data and 'sog' in data:
             if data['speed'] and data['sog']:
                 speed = float(data['speed'])
                 sog = float(data['sog'])
-                if abs(speed - sog) > 2.0:  # More than 2 knots difference
+                if abs(speed - sog) > 2.0:
                     warnings.append(f"Large difference between speed ({speed}kn) and SOG ({sog}kn)")
         
         return warnings
@@ -717,18 +626,19 @@ class ConfidenceScorer:
         is_valid, _, error = validation_result
         if not is_valid:
             confidence *= 0.5
-        elif error:  # Warning but valid
+        elif error:
             confidence *= 0.8
         
         # Adjust based on field complexity
         if field_name in ['position', 'cursor_position']:
-            confidence *= 0.9  # Complex fields are harder
+            confidence *= 0.9
         
         return min(max(confidence, 0.0), 1.0)
+
 class HybridRadarExtractor:
     """Main extraction engine that coordinates all methods."""
     
-    def __init__(self, api_keys: Dict[str, str]):
+    def __init__(self, api_keys: Dict[str, str] = None):
         """Initialize the extraction system."""
         self.radar_detector = RadarTypeDetector()
         self.preprocessor = ImagePreprocessor()
@@ -736,15 +646,22 @@ class HybridRadarExtractor:
         self.ocr_extractor = OCRExtractor()
         self.validator = ValidationEngine()
         self.scorer = ConfidenceScorer()
-        self.learning_system = IntelligentLearningSystem()
-        self.adaptive_engine = AdaptiveExtractionEngine(self.learning_system)
         
-        logger.info("Hybrid Radar Extractor initialized with learning system")
+        # Check if learning system is available (optional)
+        self.learning_system = None
+        self.adaptive_engine = None
+        try:
+            from intelligent_learning_system import IntelligentLearningSystem, AdaptiveExtractionEngine
+            self.learning_system = IntelligentLearningSystem()
+            self.adaptive_engine = AdaptiveExtractionEngine(self.learning_system)
+            logger.info("Learning system initialized")
+        except ImportError:
+            logger.info("Learning system not available - running without adaptive features")
+        
+        logger.info("Hybrid Radar Extractor initialized")
     
     async def extract_image(self, image_path: str) -> RadarImageAnalysis:
-        """
-        Extract all data from a radar image using the hybrid approach.
-        """
+        """Extract all data from a radar image using the hybrid approach."""
         start_time = datetime.now()
         filename = os.path.basename(image_path)
         
@@ -763,7 +680,7 @@ class HybridRadarExtractor:
         primary_data = {}
 
         try:
-            # Try Gemini first (more flexible with image formats)
+            # Try Gemini first
             if 'gemini' in self.ai_extractor.clients:
                 try:
                     primary_data = await self.ai_extractor.extract_with_gemini(
@@ -774,7 +691,7 @@ class HybridRadarExtractor:
                     logger.warning(f"Gemini extraction failed: {e}")
                     primary_data = {}
             
-            # Fallback to GPT-4V if Gemini fails
+            # Fallback to GPT-4V
             if not primary_data and 'gpt4v' in self.ai_extractor.clients:
                 try:
                     primary_data = await self.ai_extractor.extract_with_gpt4v(
@@ -787,7 +704,7 @@ class HybridRadarExtractor:
                     
         except Exception as e:
             logger.error(f"Primary AI extraction failed: {e}")
-                
+        
         # Process primary results
         for field_name, value in primary_data.items():
             if field_name in RADAR_FIELDS:
@@ -814,7 +731,7 @@ class HybridRadarExtractor:
             or extraction_results[field].confidence < 0.7
         ]
         
-        if missing_fields:
+        if missing_fields and self.ocr_extractor.tesseract_available:
             logger.info(f"Attempting OCR extraction for {len(missing_fields)} fields")
             
             for field_name in missing_fields:
@@ -827,10 +744,13 @@ class HybridRadarExtractor:
                     confidence = self.scorer.calculate_field_confidence(
                         field_name, ocr_value, ExtractionMethod.SPECIALIZED_OCR, validation_result
                     )
-                    if hasattr(self, 'adaptive_engine'):
+                    
+                    # Apply adaptive boost if available
+                    if self.adaptive_engine:
                         confidence = self.adaptive_engine.apply_confidence_boost(
                             field_name, radar_type.value, confidence
                         )
+                    
                     # Only use OCR result if better than existing
                     if field_name not in extraction_results or \
                        confidence > extraction_results[field_name].confidence:
@@ -891,25 +811,13 @@ class HybridRadarExtractor:
                    f"(confidence: {overall_confidence:.2f}, "
                    f"review needed: {requires_review})")
         
-        # ADD LEARNING HERE - This is where the system learns from each extraction
-        if hasattr(self, 'learning_system'):
-            try:
-                # Save extraction patterns for learning
-                for field_name, result in extraction_results.items():
-                    if result.value is not None and result.confidence > 0.8:
-                        # This is a successful extraction to learn from
-                        logger.debug(f"Learning from successful extraction of {field_name}")
-            except Exception as e:
-                logger.warning(f"Could not update learning system: {e}")
-        
-        return analysis  
+        return analysis
     
     async def extract_batch(self, image_paths: List[str], 
                           max_workers: int = 4) -> List[RadarImageAnalysis]:
         """Extract data from multiple images in parallel."""
         logger.info(f"Starting batch extraction for {len(image_paths)} images")
         
-        # Process in batches to avoid overwhelming APIs
         results = []
         
         for i in range(0, len(image_paths), max_workers):
@@ -920,7 +828,6 @@ class HybridRadarExtractor:
             for path, result in zip(batch, batch_results):
                 if isinstance(result, Exception):
                     logger.error(f"Failed to process {path}: {result}")
-                    # Create a failed result
                     results.append(RadarImageAnalysis(
                         filename=os.path.basename(path),
                         radar_type=RadarType.UNKNOWN,
@@ -935,52 +842,50 @@ class HybridRadarExtractor:
                     results.append(result)
         
         return results
+
+# Utility functions for testing
+def save_results(analysis: RadarImageAnalysis, output_dir: str):
+    """Save extraction results to JSON file."""
+    os.makedirs(output_dir, exist_ok=True)
     
-    async def get_weak_fields(self) -> List[str]:
-        import sqlite3
-        """Get fields with low extraction success rates."""
-        conn = sqlite3.connect(self.learning_system.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT field_name 
-            FROM (
-                SELECT 
-                    field_name,
-                    SUM(CASE WHEN field_value IS NOT NULL THEN 1 ELSE 0 END) * 1.0 / COUNT(*) as success_rate
-                FROM extracted_fields
-                GROUP BY field_name
-            )
-            WHERE success_rate < 0.5
-        """)
-        
-        weak_fields = [row[0] for row in cursor.fetchall()]
-        conn.close()
-        
-        return weak_fields
+    result_dict = asdict(analysis)
+    result_dict['extraction_results'] = {
+        field: asdict(result) 
+        for field, result in analysis.extraction_results.items()
+    }
+    
+    output_path = os.path.join(output_dir, f"{analysis.filename}_results.json")
+    with open(output_path, 'w') as f:
+        json.dump(result_dict, f, indent=2, default=str)
+    
+    logger.info(f"Results saved to: {output_path}")
+
+async def test_single_image(image_path: str, api_keys: Dict[str, str] = None):
+    """Test extraction on a single image."""
+    extractor = HybridRadarExtractor(api_keys)
+    result = await extractor.extract_image(image_path)
+    
+    print(f"\n=== Extraction Results for {result.filename} ===")
+    print(f"Radar Type: {result.radar_type.value}")
+    print(f"Overall Confidence: {result.overall_confidence:.2%}")
+    print(f"Processing Time: {result.processing_time:.2f}s")
+    print(f"Requires Review: {result.requires_review}")
+    
+    print("\nExtracted Fields:")
+    for field_name, extraction in result.extraction_results.items():
+        print(f"  {field_name}: {extraction.value} "
+              f"(confidence: {extraction.confidence:.2%}, "
+              f"method: {extraction.method_used.value})")
+    
+    if result.validation_errors:
+        print("\nValidation Warnings:")
+        for warning in result.validation_errors:
+            print(f"  - {warning}")
+    
+    return result
 
 if __name__ == "__main__":
     # Example usage
-    api_keys = {
-        'anthropic': os.getenv('ANTHROPIC_API_KEY'),
-        'openai': os.getenv('OPENAI_API_KEY'),
-        'google': os.getenv('GOOGLE_API_KEY')
-    }
-    
-    # Test on a single image
     test_image = "radar_image.png"
     if os.path.exists(test_image):
-        asyncio.run(test_single_image(test_image, api_keys))
-        
-    async def run_with_learning(image_path: str, api_keys: Dict[str, str]):
-        """Run extraction with learning system."""
-        # First run learning analysis
-        from quick_learning_setup import QuickLearningSystem
-        learning = QuickLearningSystem()
-        learning.save_enhanced_configuration()
-        
-        # Then run extraction
-        extractor = HybridRadarExtractor(api_keys)
-        result = await extractor.extract_image(image_path)
-        
-        return result
+        asyncio.run(test_single_image(test_image))
