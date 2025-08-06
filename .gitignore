@@ -1,4 +1,4 @@
-.venv/
+ven/
 __pycache__/
 *.pyc
 *.pyo
@@ -14,3 +14,9 @@ build/
 *.DS_Store
 *.env
 *.coverage
+venv/
+venv*/
+.venv/
+.venv*/
+ven/
+venv/
