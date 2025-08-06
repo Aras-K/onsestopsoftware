@@ -1,11 +1,11 @@
-# pages/2_Review.py - Professional Review Interface with Image Display (Azure Compatible)
+# pages/2_Review.py - Enhanced Review Interface with Success Items Support
 
 import streamlit as st
 import os
 import sys
 from datetime import datetime
 import pandas as pd
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import time
 import base64
 from io import BytesIO
@@ -44,6 +44,7 @@ st.markdown("""
         --success-color: #10b981;
         --warning-color: #f59e0b;
         --danger-color: #ef4444;
+        --info-color: #6366f1;
     }
     
     /* Main container */
@@ -101,6 +102,30 @@ st.markdown("""
         color: #721c24; 
     }
     
+    /* Review mode badge */
+    .mode-badge {
+        display: inline-block;
+        padding: 6px 16px;
+        border-radius: 20px;
+        font-weight: 600;
+        margin-left: 1rem;
+    }
+    
+    .mode-pending {
+        background: var(--warning-color);
+        color: white;
+    }
+    
+    .mode-success {
+        background: var(--success-color);
+        color: white;
+    }
+    
+    .mode-all {
+        background: var(--info-color);
+        color: white;
+    }
+    
     /* Image container */
     .image-container {
         background: white;
@@ -139,6 +164,11 @@ st.markdown("""
     
     .status-error {
         background: var(--danger-color);
+        color: white;
+    }
+    
+    .status-info {
+        background: var(--info-color);
         color: white;
     }
     
@@ -184,6 +214,17 @@ st.markdown("""
         border-radius: 8px;
         border: 2px dashed #cbd5e1;
     }
+    
+    /* Success item indicator */
+    .success-item-banner {
+        background: linear-gradient(135deg, #10b981 0%, #34d399 100%);
+        color: white;
+        padding: 0.75rem;
+        border-radius: 8px;
+        margin-bottom: 1rem;
+        text-align: center;
+        font-weight: 600;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -218,6 +259,9 @@ if 'items_reviewed' not in st.session_state:
 if 'session_start' not in st.session_state:
     st.session_state.session_start = datetime.now()
 
+if 'review_mode' not in st.session_state:
+    st.session_state.review_mode = 'pending'  # 'pending', 'success', 'all'
+
 # Helper functions
 def get_current_corrections():
     """Get corrections for current item"""
@@ -242,11 +286,27 @@ def set_correction(field_name: str, value: str, original_value: str):
             del st.session_state.all_corrections[extraction_id][field_name]
 
 def load_review_items(force_reload=False):
-    """Load review items from database."""
+    """Load review items based on current mode."""
     if force_reload or st.session_state.review_items is None:
-        with st.spinner("Loading review queue..."):
+        with st.spinner(f"Loading {st.session_state.review_mode} items..."):
             try:
-                items = st.session_state.web_helper.get_review_items_for_web(limit=50)
+                # Load items based on review mode
+                if st.session_state.review_mode == 'pending':
+                    items = st.session_state.web_helper.get_review_items_for_web(
+                        limit=50, 
+                        status_filter='pending'
+                    )
+                elif st.session_state.review_mode == 'success':
+                    items = st.session_state.web_helper.get_review_items_for_web(
+                        limit=50, 
+                        status_filter='success'
+                    )
+                else:  # 'all'
+                    items = st.session_state.web_helper.get_review_items_for_web(
+                        limit=100, 
+                        status_filter=None
+                    )
+                
                 if items:
                     st.session_state.review_items = items
                     st.session_state.current_idx = 0
@@ -278,7 +338,7 @@ def get_image_display(extraction_id: int):
         logger.error(f"Error loading image: {e}")
         return None, None
 
-def render_field_professional(field_name: str, field_data: Dict, extraction_id: int, idx: int):
+def render_field_professional(field_name: str, field_data: Dict, extraction_id: int, idx: int, is_success_item: bool = False):
     """Render a field with professional styling and edit tracking."""
     corrections = get_current_corrections()
     original_value = str(field_data.get('value', '') or '')
@@ -306,17 +366,21 @@ def render_field_professional(field_name: str, field_data: Dict, extraction_id: 
         field_key = f"field_{extraction_id}_{field_name}_{idx}"
         
         # Input field with proper state management
+        # Disable editing for success items unless explicitly allowed
+        disabled = is_success_item and not st.session_state.get('allow_success_edits', False)
+        
         new_val = st.text_input(
             f"Value for {field_name}",
             value=current_value,
             key=field_key,
             label_visibility="collapsed",
             placeholder=f"Enter {field_label}",
+            disabled=disabled,
             on_change=lambda: set_correction(
                 field_name,
                 st.session_state[field_key],
                 original_value
-            )
+            ) if not disabled else None
         )
         
         # Show original value if edited
@@ -328,7 +392,7 @@ def render_field_professional(field_name: str, field_data: Dict, extraction_id: 
                    unsafe_allow_html=True)
     
     with col4:
-        if is_edited:
+        if is_edited and not is_success_item:
             if st.button("↩️", key=f"reset_{field_key}", help="Reset to original"):
                 set_correction(field_name, original_value, original_value)
                 st.rerun()
@@ -337,19 +401,33 @@ def submit_review(action: str, item: Dict, notes: str):
     """Submit the review with proper error handling."""
     corrections = get_current_corrections()
     
+    # Check if this is a success item being re-reviewed
+    is_success_item = item.get('status') == 'success'
+    
     # Auto-detect if corrections were made
     if action == 'approve' and corrections:
         action = 'correct'
         st.info(f"📝 Submitting with {len(corrections)} corrections")
     
     try:
-        success = st.session_state.web_helper.submit_review_from_web(
-            extraction_id=item['extraction_id'],
-            reviewer=st.session_state.reviewer,
-            action=action,
-            corrections=corrections if corrections else None,
-            notes=notes or f"{action.title()} by {st.session_state.reviewer} at {datetime.now():%Y-%m-%d %H:%M}"
-        )
+        # Different handling for success items
+        if is_success_item and action == 'reject':
+            # Move successful item back to pending
+            success = st.session_state.web_helper.reopen_for_review(
+                extraction_id=item['extraction_id'],
+                reason=notes or "Re-opened for review",
+                reviewer=st.session_state.reviewer
+            )
+            message = "Item moved back to pending review"
+        else:
+            success = st.session_state.web_helper.submit_review_from_web(
+                extraction_id=item['extraction_id'],
+                reviewer=st.session_state.reviewer,
+                action=action,
+                corrections=corrections if corrections else None,
+                notes=notes or f"{action.title()} by {st.session_state.reviewer} at {datetime.now():%Y-%m-%d %H:%M}"
+            )
+            message = None
         
         if success:
             st.session_state.items_reviewed += 1
@@ -360,7 +438,7 @@ def submit_review(action: str, item: Dict, notes: str):
             
             # Show success message
             if action == 'reject':
-                st.error("❌ Item rejected and marked for reprocessing")
+                st.error(message or "❌ Item rejected and marked for reprocessing")
             elif action == 'correct':
                 st.success(f"✅ Item approved with {len(corrections)} corrections")
             else:
@@ -389,7 +467,7 @@ def submit_review(action: str, item: Dict, notes: str):
 # Professional Header
 st.markdown("""
 <div class="review-header">
-    <h1 style="margin: 0;">👁️ Review & Validation Center</h1>
+    <h1 style="margin: 0;">Review & Validation Center</h1>
     <p style="margin: 0.5rem 0 0 0; opacity: 0.95;">Verify and correct extracted radar data</p>
 </div>
 """, unsafe_allow_html=True)
@@ -415,7 +493,59 @@ if not st.session_state.reviewer:
     st.info("💡 **Tip**: Your reviews help improve the extraction accuracy over time")
     st.stop()
 
+# Review Mode Selection
+st.markdown("### 📋 Review Mode")
+col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 2])
+
+with col1:
+    if st.button(
+        "🔍 Pending Review", 
+        type="primary" if st.session_state.review_mode == 'pending' else "secondary",
+        use_container_width=True,
+        help="Review items that need validation"
+    ):
+        if st.session_state.review_mode != 'pending':
+            st.session_state.review_mode = 'pending'
+            st.session_state.review_items = None
+            st.session_state.current_idx = 0
+            st.rerun()
+
+with col2:
+    if st.button(
+        "✅ Successful Items", 
+        type="primary" if st.session_state.review_mode == 'success' else "secondary",
+        use_container_width=True,
+        help="Review already approved items"
+    ):
+        if st.session_state.review_mode != 'success':
+            st.session_state.review_mode = 'success'
+            st.session_state.review_items = None
+            st.session_state.current_idx = 0
+            st.rerun()
+
+with col3:
+    if st.button(
+        "📊 All Items", 
+        type="primary" if st.session_state.review_mode == 'all' else "secondary",
+        use_container_width=True,
+        help="Review all items regardless of status"
+    ):
+        if st.session_state.review_mode != 'all':
+            st.session_state.review_mode = 'all'
+            st.session_state.review_items = None
+            st.session_state.current_idx = 0
+            st.rerun()
+
+# Current mode indicator
+mode_badges = {
+    'pending': '<span class="mode-badge mode-pending">Reviewing Pending Items</span>',
+    'success': '<span class="mode-badge mode-success">Reviewing Successful Items</span>',
+    'all': '<span class="mode-badge mode-all">Reviewing All Items</span>'
+}
+st.markdown(mode_badges[st.session_state.review_mode], unsafe_allow_html=True)
+
 # Session Information Bar
+st.markdown("---")
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.metric("Reviewer", st.session_state.reviewer)
@@ -431,9 +561,15 @@ with col4:
 
 # Load review items
 if not load_review_items():
-    st.markdown("""
-    <div class="status-indicator status-success">
-        🎉 Excellent! No items need review at this time.
+    mode_text = {
+        'pending': "Excellent! No items need review at this time.",
+        'success': "No successful items to review.",
+        'all': "No items available."
+    }
+    
+    st.markdown(f"""
+    <div class="status-indicator status-{'success' if st.session_state.review_mode == 'pending' else 'info'}">
+        {mode_text[st.session_state.review_mode]}
     </div>
     """, unsafe_allow_html=True)
     
@@ -448,9 +584,25 @@ if not load_review_items():
 if st.session_state.review_items and st.session_state.current_idx < len(st.session_state.review_items):
     current_item = st.session_state.review_items[st.session_state.current_idx]
     total_items = len(st.session_state.review_items)
+    is_success_item = current_item.get('status') == 'success'
 else:
     st.error("No items available for review")
     st.stop()
+
+# Success item banner
+if is_success_item:
+    st.markdown("""
+    <div class="success-item-banner">
+        ✅ This is a SUCCESSFUL extraction - Review for quality assurance
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Option to enable editing for success items
+    st.session_state.allow_success_edits = st.checkbox(
+        "Enable field editing for this successful item",
+        value=False,
+        help="Check to make corrections to this already approved item"
+    )
 
 # Progress indicator
 progress = (st.session_state.current_idx + 1) / total_items
@@ -458,7 +610,7 @@ st.markdown(f"""
 <div class="progress-container">
     <div style="display: flex; justify-content: space-between; align-items: center;">
         <span><strong>Item {st.session_state.current_idx + 1} of {total_items}</strong></span>
-        <span>Extraction ID: {current_item['extraction_id']}</span>
+        <span>ID: {current_item['extraction_id']} | Status: {current_item.get('status', 'pending').upper()}</span>
         <span>{current_item.get('radar_type', 'Unknown Type')}</span>
     </div>
 </div>
@@ -532,6 +684,9 @@ with col_left:
         st.markdown(f"**Radar Type**: {current_item.get('radar_type', 'Unknown')}")
         st.markdown(f"**Overall Confidence**: {current_item.get('overall_confidence', 0):.1%}")
         st.markdown(f"**Timestamp**: {current_item.get('timestamp', 'Unknown')}")
+        st.markdown(f"**Status**: {current_item.get('status', 'pending').upper()}")
+        if current_item.get('reviewed_by'):
+            st.markdown(f"**Previously Reviewed By**: {current_item.get('reviewed_by')}")
 
 # RIGHT COLUMN - Field Review
 with col_right:
@@ -558,7 +713,8 @@ with col_right:
         
         if priority_fields:
             for i, (field_name, field_data) in enumerate(priority_fields):
-                render_field_professional(field_name, field_data, current_item['extraction_id'], 1000 + i)
+                render_field_professional(field_name, field_data, current_item['extraction_id'], 
+                                        1000 + i, is_success_item)
         else:
             st.success("✅ All fields meet confidence threshold")
     
@@ -568,7 +724,7 @@ with col_right:
         for i, field in enumerate(nav_fields):
             if field in current_item['fields']:
                 render_field_professional(field, current_item['fields'][field], 
-                                        current_item['extraction_id'], 2000 + i)
+                                        current_item['extraction_id'], 2000 + i, is_success_item)
     
     with tabs[2]:  # Settings
         st.markdown("#### Radar Settings")
@@ -576,7 +732,7 @@ with col_right:
         for i, field in enumerate(settings_fields):
             if field in current_item['fields']:
                 render_field_professional(field, current_item['fields'][field], 
-                                        current_item['extraction_id'], 3000 + i)
+                                        current_item['extraction_id'], 3000 + i, is_success_item)
     
     with tabs[3]:  # Display
         st.markdown("#### Display Parameters")
@@ -584,7 +740,7 @@ with col_right:
         for i, field in enumerate(display_fields):
             if field in current_item['fields']:
                 render_field_professional(field, current_item['fields'][field], 
-                                        current_item['extraction_id'], 4000 + i)
+                                        current_item['extraction_id'], 4000 + i, is_success_item)
     
     with tabs[4]:  # All Fields
         st.markdown("#### Complete Field List")
@@ -600,7 +756,8 @@ with col_right:
         st.markdown("---")
         
         for i, (field_name, field_data) in enumerate(sorted_fields):
-            render_field_professional(field_name, field_data, current_item['extraction_id'], 5000 + i)
+            render_field_professional(field_name, field_data, current_item['extraction_id'], 
+                                    5000 + i, is_success_item)
 
 # Review Notes Section
 st.markdown("---")
@@ -614,30 +771,61 @@ review_notes = st.text_area(
     help="These notes will be saved with your review"
 )
 
-# Action Buttons
+# Action Buttons (different for success items)
 st.markdown("### ✅ Review Actions")
 
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-    approve_label = f"✅ Approve{f' ({len(corrections)} edits)' if corrections else ''}"
-    if st.button(approve_label, type="primary", use_container_width=True, key="approve_btn"):
-        submit_review('approve', current_item, review_notes)
-
-with col2:
-    if st.button("❌ Reject", type="secondary", use_container_width=True, key="reject_btn"):
-        if not review_notes:
-            st.error("⚠️ Please provide a reason for rejection in the notes")
+if is_success_item:
+    # Actions for successful items
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        if corrections and st.session_state.allow_success_edits:
+            if st.button("💾 Save Corrections", type="primary", use_container_width=True):
+                submit_review('correct', current_item, review_notes)
         else:
-            submit_review('reject', current_item, review_notes)
-
-with col3:
-    if st.button("⏭️ Skip", use_container_width=True, key="skip_btn"):
-        if st.session_state.current_idx < total_items - 1:
-            st.session_state.current_idx += 1
-            st.rerun()
-        else:
-            st.info("Last item in batch")
+            if st.button("✅ Confirm Quality", type="primary", use_container_width=True):
+                st.success("Quality confirmed!")
+                if st.session_state.current_idx < total_items - 1:
+                    st.session_state.current_idx += 1
+                    st.rerun()
+    
+    with col2:
+        if st.button("🔄 Re-open for Review", type="secondary", use_container_width=True):
+            if not review_notes:
+                st.error("⚠️ Please provide a reason for re-opening in the notes")
+            else:
+                submit_review('reject', current_item, review_notes)
+    
+    with col3:
+        if st.button("⏭️ Skip", use_container_width=True):
+            if st.session_state.current_idx < total_items - 1:
+                st.session_state.current_idx += 1
+                st.rerun()
+            else:
+                st.info("Last item in batch")
+else:
+    # Standard actions for pending items
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        approve_label = f"✅ Approve{f' ({len(corrections)} edits)' if corrections else ''}"
+        if st.button(approve_label, type="primary", use_container_width=True, key="approve_btn"):
+            submit_review('approve', current_item, review_notes)
+    
+    with col2:
+        if st.button("❌ Reject", type="secondary", use_container_width=True, key="reject_btn"):
+            if not review_notes:
+                st.error("⚠️ Please provide a reason for rejection in the notes")
+            else:
+                submit_review('reject', current_item, review_notes)
+    
+    with col3:
+        if st.button("⏭️ Skip", use_container_width=True, key="skip_btn"):
+            if st.session_state.current_idx < total_items - 1:
+                st.session_state.current_idx += 1
+                st.rerun()
+            else:
+                st.info("Last item in batch")
 
 with col4:
     nav_col1, nav_col2 = st.columns(2)
@@ -656,16 +844,29 @@ with col4:
 st.markdown("---")
 remaining = total_items - st.session_state.current_idx - 1
 if remaining > 0:
-    st.info(f"📋 {remaining} more items in current batch | Batch will refresh after completion")
+    st.info(f"📋 {remaining} more items in current batch | Mode: {st.session_state.review_mode.upper()}")
 else:
     st.warning("📋 Last item in batch - new items will load after submission")
 
 # Sidebar with help and stats
 with st.sidebar:
     st.markdown("### 📊 Session Statistics")
+    st.metric("Review Mode", st.session_state.review_mode.title())
     st.metric("Items in Queue", total_items)
     st.metric("Current Position", st.session_state.current_idx + 1)
     st.metric("Edits Made", len(corrections))
+    
+    # Quick filters
+    st.markdown("---")
+    st.markdown("### 🔍 Quick Filters")
+    
+    # Stats by status
+    if st.session_state.review_items:
+        pending_count = sum(1 for item in st.session_state.review_items if item.get('status') == 'pending')
+        success_count = sum(1 for item in st.session_state.review_items if item.get('status') == 'success')
+        
+        st.markdown(f"**Pending**: {pending_count} items")
+        st.markdown(f"**Success**: {success_count} items")
     
     # Keyboard shortcuts help
     st.markdown("---")
@@ -675,12 +876,15 @@ with st.sidebar:
     - **Enter**: Submit field changes
     - Changes are highlighted in yellow
     - Click ↩️ to reset a field
-    - Approving with edits auto-saves corrections
+    - Switch modes to review different item types
+    - Success items can be re-opened if issues found
     """)
     
     # Debug info (collapsible)
     with st.expander("🔧 Debug Info"):
+        st.markdown(f"**Mode**: {st.session_state.review_mode}")
         st.markdown(f"**Extraction ID**: {current_item['extraction_id']}")
+        st.markdown(f"**Status**: {current_item.get('status', 'pending')}")
         st.markdown(f"**Corrections**: {corrections}")
         st.markdown(f"**Image Source**: {source if 'source' in locals() else 'N/A'}")
         

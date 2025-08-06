@@ -1,4 +1,4 @@
-# web_helpers.py - Helper functions to bridge web interface with existing code (Azure Compatible)
+# web_helpers.py - Enhanced Helper functions with Success Item Support (Azure Compatible)
 
 import asyncio
 import os
@@ -173,46 +173,171 @@ class WebProcessingHelper:
         else:
             return 'failed'
     
-    def get_review_items_for_web(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """Get review items formatted for web display."""
+    def get_review_items_for_web(self, limit: int = 50, status_filter: str = 'pending') -> List[Dict[str, Any]]:
+        """
+        Get review items formatted for web display with status filtering.
+        
+        Args:
+            limit: Maximum number of items to return
+            status_filter: 'pending', 'success', 'all', or None for all items
+        
+        Returns:
+            List of formatted review items
+        """
         try:
-            queue = self.db_manager.get_review_queue(limit=limit)
-            
-            web_items = []
-            for item in queue:
-                # Get full extraction details
-                extraction = self.db_manager.get_extraction_details(item['extraction_id'])
+            # Build the query based on status filter
+            with self.db_manager.get_connection() as conn:
+                cursor = conn.cursor()
                 
-                # Format for web
-                web_item = {
-                    'extraction_id': item['extraction_id'],
-                    'filename': extraction['filename'],
-                    'radar_type': extraction['radar_type'],
-                    'overall_confidence': extraction['overall_confidence'],
-                    'timestamp': extraction['extraction_timestamp'],
-                    'priority': item['priority'],
-                    'fields': {}
-                }
+                base_query = """
+                    SELECT 
+                        e.extraction_id,
+                        e.filename,
+                        e.radar_type,
+                        e.overall_confidence,
+                        e.extraction_timestamp,
+                        e.extraction_status,
+                        e.processing_time,
+                        e.requires_review,
+                        r.reviewer_name,
+                        r.review_timestamp,
+                        r.review_status,
+                        r.review_notes
+                    FROM extractions e
+                    LEFT JOIN reviews r ON e.extraction_id = r.extraction_id
+                """
                 
-                # Organize fields by confidence
-                for field in extraction.get('fields', []):
-                    web_item['fields'][field['field_name']] = {
-                        'value': field['field_value'],
-                        'confidence': field['confidence'],
-                        'is_valid': field['is_valid'],
-                        'method': field['extraction_method']
+                # Apply status filter
+                where_clauses = []
+                params = []
+                
+                if status_filter == 'pending':
+                    where_clauses.append("""
+                        (e.extraction_status = 'review' OR 
+                         e.extraction_status = 'pending' OR 
+                         e.requires_review = TRUE OR
+                         (e.extraction_status IS NULL AND e.overall_confidence < 0.8))
+                    """)
+                elif status_filter == 'success':
+                    where_clauses.append("""
+                        (e.extraction_status = 'success' OR 
+                         (r.review_status = 'approved' OR r.review_status = 'corrected'))
+                    """)
+                elif status_filter == 'failed':
+                    where_clauses.append("e.extraction_status = 'failed'")
+                # If status_filter is 'all' or None, no filter is applied
+                
+                if where_clauses:
+                    base_query += " WHERE " + " AND ".join(where_clauses)
+                
+                base_query += " ORDER BY e.extraction_timestamp DESC LIMIT %s"
+                params.append(limit)
+                
+                cursor.execute(base_query, params)
+                items = cursor.fetchall()
+                
+                web_items = []
+                for row in items:
+                    extraction_id = row[0]
+                    
+                    # Get field details
+                    cursor.execute("""
+                        SELECT 
+                            field_name,
+                            field_value,
+                            confidence,
+                            is_valid,
+                            extraction_method
+                        FROM extracted_fields
+                        WHERE extraction_id = %s
+                    """, (extraction_id,))
+                    
+                    fields = {}
+                    for field_row in cursor.fetchall():
+                        fields[field_row[0]] = {
+                            'value': field_row[1],
+                            'confidence': field_row[2] or 0,
+                            'is_valid': field_row[3],
+                            'method': field_row[4]
+                        }
+                    
+                    # Determine actual status
+                    if row[10]:  # review_status exists
+                        if row[10] in ['approved', 'corrected']:
+                            status = 'success'
+                        elif row[10] == 'rejected':
+                            status = 'rejected'
+                        else:
+                            status = 'pending'
+                    else:
+                        status = row[5] or 'pending'  # extraction_status
+                    
+                    web_item = {
+                        'extraction_id': extraction_id,
+                        'filename': row[1],
+                        'radar_type': row[2],
+                        'overall_confidence': row[3] or 0,
+                        'timestamp': row[4].isoformat() if row[4] else None,
+                        'status': status,
+                        'processing_time': row[6],
+                        'requires_review': row[7],
+                        'reviewed_by': row[8],
+                        'review_timestamp': row[9].isoformat() if row[9] else None,
+                        'review_notes': row[11],
+                        'fields': fields,
+                        'has_image': self.image_storage is not None
                     }
+                    
+                    web_items.append(web_item)
                 
-                # Add image availability flag
-                web_item['has_image'] = self.image_storage is not None
+                return web_items
                 
-                web_items.append(web_item)
-            
-            return web_items
-            
         except Exception as e:
             logger.error(f"Error getting review items: {e}")
             return []
+    
+    def reopen_for_review(self, extraction_id: int, reason: str, reviewer: str) -> bool:
+        """
+        Move a successful item back to pending review status.
+        
+        Args:
+            extraction_id: ID of the extraction to reopen
+            reason: Reason for reopening
+            reviewer: Name of the reviewer reopening the item
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            with self.db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Update extraction status
+                cursor.execute("""
+                    UPDATE extractions 
+                    SET extraction_status = 'review',
+                        requires_review = TRUE
+                    WHERE extraction_id = %s
+                """, (extraction_id,))
+                
+                # Add a new review record indicating reopening
+                cursor.execute("""
+                    INSERT INTO reviews (
+                        extraction_id,
+                        reviewer_name,
+                        review_status,
+                        review_notes,
+                        review_timestamp
+                    ) VALUES (%s, %s, 'reopened', %s, %s)
+                """, (extraction_id, reviewer, f"Reopened: {reason}", datetime.now()))
+                
+                conn.commit()
+                logger.info(f"Extraction {extraction_id} reopened for review by {reviewer}")
+                return True
+                
+        except Exception as e:
+            logger.error(f"Error reopening extraction {extraction_id}: {e}")
+            return False
     
     def submit_review_from_web(self, extraction_id: int, reviewer: str, 
                               action: str, corrections: Dict[str, Any] = None,
@@ -227,13 +352,41 @@ class WebProcessingHelper:
             
             review_status = status_map.get(action, ReviewStatus.APPROVED)
             
-            return self.db_manager.submit_review(
+            # Submit the review
+            success = self.db_manager.submit_review(
                 extraction_id=extraction_id,
                 reviewer_name=reviewer,
                 status=review_status,
                 notes=notes,
                 corrections=corrections
             )
+            
+            if success:
+                # Update extraction status based on review
+                with self.db_manager.get_connection() as conn:
+                    cursor = conn.cursor()
+                    
+                    if action == 'approve' or action == 'correct':
+                        new_status = 'success'
+                        requires_review = False
+                    elif action == 'reject':
+                        new_status = 'failed'
+                        requires_review = True
+                    else:
+                        new_status = 'review'
+                        requires_review = True
+                    
+                    cursor.execute("""
+                        UPDATE extractions 
+                        SET extraction_status = %s,
+                            requires_review = %s
+                        WHERE extraction_id = %s
+                    """, (new_status, requires_review, extraction_id))
+                    
+                    conn.commit()
+            
+            return success
+            
         except Exception as e:
             logger.error(f"Error submitting review: {e}")
             return False
@@ -241,6 +394,21 @@ class WebProcessingHelper:
     def get_image_for_display(self, extraction_id: int) -> Optional[bytes]:
         """Get image data for display in review interface."""
         if not self.image_storage:
+            # Try to get from database if image storage not available
+            try:
+                with self.db_manager.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT image_data 
+                        FROM extraction_images 
+                        WHERE extraction_id = %s
+                    """, (extraction_id,))
+                    
+                    result = cursor.fetchone()
+                    if result and result[0]:
+                        return bytes(result[0])
+            except Exception as e:
+                logger.debug(f"No image in database for extraction {extraction_id}: {e}")
             return None
         
         try:
@@ -261,6 +429,73 @@ class WebProcessingHelper:
             logger.warning(f"Failed to encode image as base64: {e}")
         return None
     
+    def get_extraction_statistics(self, status_filter: str = None) -> Dict[str, int]:
+        """
+        Get counts of extractions by status.
+        
+        Returns:
+            Dictionary with counts by status
+        """
+        try:
+            with self.db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Get counts by status
+                cursor.execute("""
+                    SELECT 
+                        extraction_status,
+                        COUNT(*) as count
+                    FROM extractions
+                    GROUP BY extraction_status
+                """)
+                
+                status_counts = {}
+                for row in cursor.fetchall():
+                    status = row[0] or 'pending'
+                    status_counts[status] = row[1]
+                
+                # Get review counts
+                cursor.execute("""
+                    SELECT 
+                        COUNT(DISTINCT e.extraction_id) as reviewed_count
+                    FROM extractions e
+                    JOIN reviews r ON e.extraction_id = r.extraction_id
+                    WHERE r.review_status IN ('approved', 'corrected')
+                """)
+                
+                reviewed_count = cursor.fetchone()[0] or 0
+                
+                # Get pending review count
+                cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM extractions 
+                    WHERE requires_review = TRUE 
+                       OR extraction_status = 'review'
+                       OR (extraction_status IS NULL AND overall_confidence < 0.8)
+                """)
+                
+                pending_review = cursor.fetchone()[0] or 0
+                
+                return {
+                    'total': sum(status_counts.values()),
+                    'success': status_counts.get('success', 0) + reviewed_count,
+                    'pending': pending_review,
+                    'failed': status_counts.get('failed', 0),
+                    'reviewed': reviewed_count,
+                    'status_breakdown': status_counts
+                }
+                
+        except Exception as e:
+            logger.error(f"Error getting extraction statistics: {e}")
+            return {
+                'total': 0,
+                'success': 0,
+                'pending': 0,
+                'failed': 0,
+                'reviewed': 0,
+                'status_breakdown': {}
+            }
+    
     def get_analytics_data(self, days: int = 30) -> Dict[str, Any]:
         """Get analytics data for web display."""
         try:
@@ -269,13 +504,20 @@ class WebProcessingHelper:
             
             stats = self.db_manager.get_statistics(start_date, end_date)
             
+            # Get extraction statistics
+            extraction_stats = self.get_extraction_statistics()
+            
             # Prepare data for charts
             analytics = {
-                'overall_stats': stats.get('overall', {}),
+                'overall_stats': {
+                    **stats.get('overall', {}),
+                    **extraction_stats
+                },
                 'field_performance': [],
                 'daily_trend': [],
                 'radar_type_distribution': stats.get('radar_type_distribution', []),
-                'method_effectiveness': stats.get('method_effectiveness', [])
+                'method_effectiveness': stats.get('method_effectiveness', []),
+                'status_distribution': extraction_stats
             }
             
             # Field performance data
@@ -293,8 +535,7 @@ class WebProcessingHelper:
             # Sort by success rate
             analytics['field_performance'].sort(key=lambda x: x['success_rate'], reverse=True)
             
-            # Get daily trend data (simplified for performance)
-            # Instead of making 30 queries, aggregate in the database
+            # Get daily trend data
             analytics['daily_trend'] = self._get_daily_trend_data(start_date, end_date)
             
             return analytics
@@ -306,7 +547,8 @@ class WebProcessingHelper:
                 'field_performance': [],
                 'daily_trend': [],
                 'radar_type_distribution': [],
-                'method_effectiveness': []
+                'method_effectiveness': [],
+                'status_distribution': {}
             }
     
     def _get_daily_trend_data(self, start_date: datetime, end_date: datetime) -> List[Dict]:
@@ -318,8 +560,13 @@ class WebProcessingHelper:
                     SELECT 
                         DATE(extraction_timestamp) as date,
                         COUNT(*) as total,
-                        SUM(CASE WHEN extraction_status = 'success' THEN 1 ELSE 0 END) as successful,
+                        SUM(CASE WHEN extraction_status = 'success' 
+                            OR extraction_id IN (
+                                SELECT extraction_id FROM reviews 
+                                WHERE review_status IN ('approved', 'corrected')
+                            ) THEN 1 ELSE 0 END) as successful,
                         SUM(CASE WHEN extraction_status = 'failed' THEN 1 ELSE 0 END) as failed,
+                        SUM(CASE WHEN requires_review = TRUE THEN 1 ELSE 0 END) as pending_review,
                         AVG(overall_confidence) as avg_confidence
                     FROM extractions
                     WHERE extraction_timestamp BETWEEN %s AND %s
@@ -334,7 +581,8 @@ class WebProcessingHelper:
                         'total': row[1] or 0,
                         'successful': row[2] or 0,
                         'failed': row[3] or 0,
-                        'avg_confidence': (row[4] * 100) if row[4] else 0
+                        'pending_review': row[4] or 0,
+                        'avg_confidence': (row[5] * 100) if row[5] else 0
                     })
                 
                 return trend_data
@@ -343,8 +591,16 @@ class WebProcessingHelper:
             logger.error(f"Error getting daily trend data: {e}")
             return []
     
-    def export_data_for_web(self, format: str = 'csv', days: int = 30) -> Dict[str, Any]:
-        """Export data and return file info for web download."""
+    def export_data_for_web(self, format: str = 'csv', days: int = 30, 
+                           status_filter: str = None) -> Dict[str, Any]:
+        """
+        Export data and return file info for web download.
+        
+        Args:
+            format: Export format ('csv', 'json', 'excel')
+            days: Number of days to export
+            status_filter: Optional status filter ('success', 'pending', 'failed', None for all)
+        """
         try:
             end_date = datetime.now()
             start_date = end_date - timedelta(days=days)
@@ -354,48 +610,59 @@ class WebProcessingHelper:
                 temp_filename = temp_file.name
             
             try:
+                with self.db_manager.get_connection() as conn:
+                    # Build query with optional status filter
+                    query = """
+                        SELECT 
+                            e.extraction_id,
+                            e.filename,
+                            e.radar_type,
+                            e.extraction_status,
+                            e.overall_confidence,
+                            e.processing_time,
+                            e.extraction_timestamp,
+                            e.requires_review,
+                            ef.field_name,
+                            ef.field_value,
+                            ef.confidence as field_confidence,
+                            ef.extraction_method,
+                            r.reviewer_name,
+                            r.review_status,
+                            r.review_timestamp
+                        FROM extractions e
+                        LEFT JOIN extracted_fields ef ON e.extraction_id = ef.extraction_id
+                        LEFT JOIN reviews r ON e.extraction_id = r.extraction_id
+                        WHERE e.extraction_timestamp BETWEEN %s AND %s
+                    """
+                    
+                    params = [start_date, end_date]
+                    
+                    if status_filter:
+                        if status_filter == 'success':
+                            query += " AND (e.extraction_status = 'success' OR r.review_status IN ('approved', 'corrected'))"
+                        elif status_filter == 'pending':
+                            query += " AND (e.requires_review = TRUE OR e.extraction_status = 'review')"
+                        elif status_filter == 'failed':
+                            query += " AND e.extraction_status = 'failed'"
+                    
+                    query += " ORDER BY e.extraction_id, ef.field_name"
+                    
+                    df = pd.read_sql_query(query, conn, params=params)
+                
                 if format == 'csv':
-                    self.db_manager.export_to_csv(temp_filename, start_date, end_date)
+                    df.to_csv(temp_filename, index=False)
                     mime_type = 'text/csv'
                     
                 elif format == 'json':
-                    # Get data and export as JSON
-                    with self.db_manager.get_connection() as conn:
-                        # Simpler query that works with both PostgreSQL and pandas
-                        query = """
-                            SELECT 
-                                e.extraction_id,
-                                e.filename,
-                                e.radar_type,
-                                e.extraction_status,
-                                e.overall_confidence,
-                                e.processing_time,
-                                e.extraction_timestamp,
-                                ef.field_name,
-                                ef.field_value,
-                                ef.confidence as field_confidence,
-                                ef.extraction_method
-                            FROM extractions e
-                            LEFT JOIN extracted_fields ef ON e.extraction_id = ef.extraction_id
-                            WHERE e.extraction_timestamp BETWEEN %s AND %s
-                            ORDER BY e.extraction_id, ef.field_name
-                        """
-                        df = pd.read_sql_query(query, conn, params=(start_date, end_date))
-                        
-                        # Convert to JSON
-                        json_data = df.to_dict('records')
-                        with open(temp_filename, 'w') as f:
-                            json.dump(json_data, f, indent=2, default=str)
-                    
+                    # Convert to JSON
+                    json_data = df.to_dict('records')
+                    with open(temp_filename, 'w') as f:
+                        json.dump(json_data, f, indent=2, default=str)
                     mime_type = 'application/json'
                     
                 elif format == 'excel':
                     # Export as Excel
-                    self.db_manager.export_to_csv(temp_filename.replace('.excel', '.csv'), 
-                                                 start_date, end_date)
-                    df = pd.read_csv(temp_filename.replace('.excel', '.csv'))
                     df.to_excel(temp_filename, index=False)
-                    os.unlink(temp_filename.replace('.excel', '.csv'))
                     mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
                     
                 else:
@@ -408,10 +675,11 @@ class WebProcessingHelper:
                 # Clean up
                 os.unlink(temp_filename)
                 
+                status_suffix = f"_{status_filter}" if status_filter else ""
                 return {
                     'success': True,
                     'content': content,
-                    'filename': f'radar_export_{datetime.now():%Y%m%d_%H%M%S}.{format}',
+                    'filename': f'radar_export{status_suffix}_{datetime.now():%Y%m%d_%H%M%S}.{format}',
                     'mime_type': mime_type,
                     'size': len(content)
                 }
@@ -453,10 +721,33 @@ class WebProcessingHelper:
                 logger.warning(f"Failed to cleanup images: {e}")
         return 0
     
-    def get_recent_extractions(self, limit: int = 10) -> List[Dict]:
-        """Get recent extractions for dashboard."""
+    def get_recent_extractions(self, limit: int = 10, status_filter: str = None) -> List[Dict]:
+        """
+        Get recent extractions for dashboard.
+        
+        Args:
+            limit: Maximum number of extractions to return
+            status_filter: Optional filter by status
+        """
         try:
-            return self.db_manager.get_recent_extractions(limit=limit)
+            items = self.get_review_items_for_web(limit=limit, status_filter=status_filter)
+            
+            # Simplify for dashboard display
+            recent = []
+            for item in items:
+                recent.append({
+                    'extraction_id': item['extraction_id'],
+                    'filename': item['filename'],
+                    'timestamp': item['timestamp'],
+                    'status': item['status'],
+                    'confidence': item['overall_confidence'],
+                    'field_count': len(item['fields']),
+                    'reviewed_by': item.get('reviewed_by'),
+                    'radar_type': item['radar_type']
+                })
+            
+            return recent
+            
         except Exception as e:
             logger.error(f"Error getting recent extractions: {e}")
             return []

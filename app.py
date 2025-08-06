@@ -124,29 +124,6 @@ with st.sidebar:
     st.markdown("---")
     
     # Navigation (Note: switch_page might not work in Azure, using different approach)
-    st.markdown("### Navigation")
-    
-    # Create navigation buttons
-    if st.button("🏠 Dashboard", use_container_width=True, key="nav_dashboard"):
-        st.rerun()
-    
-    if st.button("📤 Upload & Process", use_container_width=True, key="nav_upload"):
-        st.session_state.page = "upload"
-        st.rerun()
-    
-    if st.button("👁️ Review Queue", use_container_width=True, key="nav_review"):
-        st.session_state.page = "review"
-        st.rerun()
-    
-    if st.button("📊 Analytics", use_container_width=True, key="nav_analytics"):
-        st.session_state.page = "analytics"
-        st.rerun()
-    
-    if st.button("📥 Export Data", use_container_width=True, key="nav_export"):
-        st.session_state.page = "export"
-        st.rerun()
-    
-    st.markdown("---")
     
     # System Health
     st.markdown("### System Health")

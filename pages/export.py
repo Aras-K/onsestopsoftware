@@ -373,7 +373,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Quick Export Options
-st.markdown("## 🚀 Quick Export")
+st.markdown("## Quick Export")
 
 quick_cols = st.columns(4)
 
@@ -440,11 +440,11 @@ with quick_cols[3]:
 
 # Custom Export Section
 st.markdown("---")
-st.markdown("## 🎯 Custom Export")
+st.markdown("## Custom Export")
 
 # Filters
 with st.container():
-    st.markdown("### 📋 Export Filters")
+    st.markdown("###  Export Filters")
     
     filter_cols = st.columns(3)
     
@@ -708,25 +708,7 @@ with st.sidebar:
     st.markdown("""
     #### Format Descriptions
     
-    **CSV**: Simple, universal format
-    - ✅ Opens in Excel
-    - ✅ Easy to import
-    - ❌ Single sheet only
     
-    **Excel**: Professional reports
-    - ✅ Multiple sheets
-    - ✅ Formatting preserved
-    - ✅ Summary statistics
-    
-    **JSON**: Technical integration
-    - ✅ Structured data
-    - ✅ API-friendly
-    - ✅ Preserves types
-    
-    **ZIP**: Complete archive
-    - ✅ All formats included
-    - ✅ Summary report
-    - ✅ Metadata included
     """)
     
     st.markdown("---")
