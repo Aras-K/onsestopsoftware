@@ -1,6 +1,8 @@
 # image_storage.py
 # Image Storage Manager with Azure Blob Storage support
 
+# image_storage.py - Image Storage Manager with original filename preservation
+
 import os
 import json
 import logging
@@ -9,6 +11,7 @@ from typing import Optional, Dict, Tuple, Any
 import shutil
 from datetime import datetime, timedelta
 from abc import ABC, abstractmethod
+import threading
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -27,7 +30,7 @@ class BaseImageStorage(ABC):
     """Abstract base class for image storage."""
     
     @abstractmethod
-    def store_image(self, file_path: str, extraction_id: int) -> str:
+    def store_image(self, file_path: str, extraction_id: int, original_filename: str = None) -> str:
         """Store an image and associate it with an extraction ID."""
         pass
     
@@ -42,6 +45,11 @@ class BaseImageStorage(ABC):
         pass
     
     @abstractmethod
+    def get_image_metadata(self, extraction_id: int) -> Optional[Dict[str, Any]]:
+        """Get metadata about the stored image including original filename."""
+        pass
+    
+    @abstractmethod
     def cleanup_old_images(self, days: int = 7) -> int:
         """Remove images older than specified days."""
         pass
@@ -52,7 +60,7 @@ class BaseImageStorage(ABC):
         pass
 
 class LocalImageStorage(BaseImageStorage):
-    """Local file system storage for images."""
+    """Local file system storage for images with original filename preservation."""
     
     def __init__(self, storage_dir: str = "radar_images"):
         """Initialize local storage."""
@@ -60,6 +68,7 @@ class LocalImageStorage(BaseImageStorage):
         self.storage_dir.mkdir(exist_ok=True)
         self.mapping_file = self.storage_dir / "image_mappings.json"
         self._ensure_mapping_file()
+        self._lock = threading.Lock()  # Thread safety for file operations
         logger.info(f"Local image storage initialized at: {self.storage_dir}")
     
     def _ensure_mapping_file(self):
@@ -68,41 +77,75 @@ class LocalImageStorage(BaseImageStorage):
             with open(self.mapping_file, 'w') as f:
                 json.dump({}, f)
     
-    def _load_mappings(self) -> Dict[str, str]:
-        """Load the current mappings."""
-        try:
-            with open(self.mapping_file, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Error loading mappings: {e}")
-            return {}
+    def _load_mappings(self) -> Dict[str, Dict[str, Any]]:
+        """Load the current mappings with thread safety."""
+        with self._lock:
+            try:
+                with open(self.mapping_file, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Error loading mappings: {e}")
+                return {}
     
-    def _save_mappings(self, mappings: Dict[str, str]):
-        """Save mappings to file."""
-        try:
-            with open(self.mapping_file, 'w') as f:
-                json.dump(mappings, f, indent=2)
-        except Exception as e:
-            logger.error(f"Error saving mappings: {e}")
+    def _save_mappings(self, mappings: Dict[str, Dict[str, Any]]):
+        """Save mappings to file with atomic write."""
+        with self._lock:
+            try:
+                # Atomic write using temp file
+                temp_file = self.mapping_file.with_suffix('.tmp')
+                with open(temp_file, 'w') as f:
+                    json.dump(mappings, f, indent=2)
+                temp_file.replace(self.mapping_file)
+            except Exception as e:
+                logger.error(f"Error saving mappings: {e}")
     
-    def store_image(self, file_path: str, extraction_id: int) -> str:
-        """Store an image and associate it with an extraction ID."""
+    def store_image(self, file_path: str, extraction_id: int, original_filename: str = None) -> str:
+        """
+        Store an image preserving original filename.
+        
+        Args:
+            file_path: Path to the image file to store
+            extraction_id: ID of the extraction
+            original_filename: Original filename to preserve
+        """
         try:
-            # Generate unique filename
+            # Use original filename if provided, otherwise use basename
+            if original_filename is None:
+                original_filename = Path(file_path).name
+            
+            # Create extraction-specific directory
+            extraction_dir = self.storage_dir / f"extraction_{extraction_id}"
+            extraction_dir.mkdir(exist_ok=True)
+            
+            # Preserve original filename but make it unique within the extraction
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            file_extension = Path(file_path).suffix
-            stored_filename = f"extraction_{extraction_id}_{timestamp}{file_extension}"
-            stored_path = self.storage_dir / stored_filename
+            file_extension = Path(original_filename).suffix
+            file_stem = Path(original_filename).stem
+            
+            # Store with original name but in unique directory
+            stored_filename = original_filename
+            stored_path = extraction_dir / stored_filename
+            
+            # If file already exists, add timestamp
+            if stored_path.exists():
+                stored_filename = f"{file_stem}_{timestamp}{file_extension}"
+                stored_path = extraction_dir / stored_filename
             
             # Copy file to storage
             shutil.copy2(file_path, stored_path)
             
-            # Update mappings
+            # Update mappings with metadata
             mappings = self._load_mappings()
-            mappings[str(extraction_id)] = str(stored_path)
+            mappings[str(extraction_id)] = {
+                'path': str(stored_path),
+                'original_filename': original_filename,
+                'stored_filename': stored_filename,
+                'timestamp': datetime.now().isoformat(),
+                'size': os.path.getsize(stored_path)
+            }
             self._save_mappings(mappings)
             
-            logger.info(f"Image stored locally for extraction {extraction_id}")
+            logger.info(f"Image stored locally for extraction {extraction_id}: {original_filename}")
             return str(stored_path)
             
         except Exception as e:
@@ -112,10 +155,12 @@ class LocalImageStorage(BaseImageStorage):
     def get_image_path(self, extraction_id: int) -> Optional[str]:
         """Get the stored image path for an extraction ID."""
         mappings = self._load_mappings()
-        path = mappings.get(str(extraction_id))
+        mapping = mappings.get(str(extraction_id))
         
-        if path and Path(path).exists():
-            return path
+        if mapping and 'path' in mapping:
+            path = mapping['path']
+            if Path(path).exists():
+                return path
         return None
     
     def get_image_data(self, extraction_id: int) -> Optional[bytes]:
@@ -129,30 +174,37 @@ class LocalImageStorage(BaseImageStorage):
                 logger.error(f"Error reading image data: {e}")
         return None
     
+    def get_image_metadata(self, extraction_id: int) -> Optional[Dict[str, Any]]:
+        """Get metadata about the stored image."""
+        mappings = self._load_mappings()
+        return mappings.get(str(extraction_id))
+    
     def cleanup_old_images(self, days: int = 7) -> int:
         """Remove images older than specified days."""
         removed = 0
         mappings = self._load_mappings()
         updated_mappings = {}
+        cutoff_date = datetime.now() - timedelta(days=days)
         
         try:
-            for extraction_id, path in mappings.items():
-                path_obj = Path(path)
-                if path_obj.exists():
-                    # Check age
-                    age_days = (datetime.now() - datetime.fromtimestamp(path_obj.stat().st_mtime)).days
-                    if age_days > days:
-                        path_obj.unlink()
-                        removed += 1
-                        logger.info(f"Removed old image: {path}")
+            for extraction_id, mapping in mappings.items():
+                if 'timestamp' in mapping:
+                    stored_date = datetime.fromisoformat(mapping['timestamp'])
+                    if stored_date < cutoff_date:
+                        # Remove entire extraction directory
+                        extraction_dir = self.storage_dir / f"extraction_{extraction_id}"
+                        if extraction_dir.exists():
+                            shutil.rmtree(extraction_dir)
+                            removed += 1
+                            logger.info(f"Removed old extraction directory: {extraction_dir}")
                     else:
-                        updated_mappings[extraction_id] = path
+                        updated_mappings[extraction_id] = mapping
                 else:
-                    # Path doesn't exist, remove from mappings
-                    removed += 1
+                    # Keep if no timestamp (backward compatibility)
+                    updated_mappings[extraction_id] = mapping
             
             self._save_mappings(updated_mappings)
-            logger.info(f"Cleanup complete: {removed} images removed")
+            logger.info(f"Cleanup complete: {removed} extraction directories removed")
             
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
@@ -165,11 +217,12 @@ class LocalImageStorage(BaseImageStorage):
         total_size = 0
         valid_images = 0
         
-        for path in mappings.values():
-            path_obj = Path(path)
-            if path_obj.exists():
-                total_size += path_obj.stat().st_size
-                valid_images += 1
+        for mapping in mappings.values():
+            if 'path' in mapping:
+                path_obj = Path(mapping['path'])
+                if path_obj.exists():
+                    total_size += mapping.get('size', path_obj.stat().st_size)
+                    valid_images += 1
         
         return {
             'storage_type': 'local',
@@ -180,16 +233,10 @@ class LocalImageStorage(BaseImageStorage):
         }
 
 class AzureBlobImageStorage(BaseImageStorage):
-    """Azure Blob Storage for images."""
+    """Azure Blob Storage for images with original filename preservation."""
     
     def __init__(self, connection_string: str = None, container_name: str = "radar-images"):
-        """
-        Initialize Azure Blob Storage.
-        
-        Args:
-            connection_string: Azure Storage connection string
-            container_name: Name of the blob container
-        """
+        """Initialize Azure Blob Storage."""
         if not AZURE_STORAGE_AVAILABLE:
             raise ImportError("Azure Storage SDK is not installed. Install with: pip install azure-storage-blob")
         
@@ -224,7 +271,7 @@ class AzureBlobImageStorage(BaseImageStorage):
             logger.error(f"Error ensuring container: {e}")
             raise
     
-    def _load_mappings(self) -> Dict[str, str]:
+    def _load_mappings(self) -> Dict[str, Dict[str, Any]]:
         """Load mappings from Azure Blob Storage."""
         try:
             blob_client = self.blob_service_client.get_blob_client(
@@ -242,7 +289,7 @@ class AzureBlobImageStorage(BaseImageStorage):
             logger.error(f"Error loading mappings from Azure: {e}")
             return {}
     
-    def _save_mappings(self, mappings: Dict[str, str]):
+    def _save_mappings(self, mappings: Dict[str, Dict[str, Any]]):
         """Save mappings to Azure Blob Storage."""
         try:
             blob_client = self.blob_service_client.get_blob_client(
@@ -258,13 +305,16 @@ class AzureBlobImageStorage(BaseImageStorage):
         except Exception as e:
             logger.error(f"Error saving mappings to Azure: {e}")
     
-    def store_image(self, file_path: str, extraction_id: int) -> str:
-        """Store an image in Azure Blob Storage."""
+    def store_image(self, file_path: str, extraction_id: int, original_filename: str = None) -> str:
+        """Store an image in Azure Blob Storage preserving original filename."""
         try:
-            # Generate unique blob name
+            # Use original filename if provided
+            if original_filename is None:
+                original_filename = Path(file_path).name
+            
+            # Create blob path with extraction ID as folder
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            file_extension = Path(file_path).suffix
-            blob_name = f"extraction_{extraction_id}_{timestamp}{file_extension}"
+            blob_name = f"extractions/{extraction_id}/{original_filename}"
             
             # Upload to Azure
             blob_client = self.blob_service_client.get_blob_client(
@@ -278,12 +328,18 @@ class AzureBlobImageStorage(BaseImageStorage):
             # Get blob URL
             blob_url = blob_client.url
             
-            # Update mappings
+            # Update mappings with metadata
             mappings = self._load_mappings()
-            mappings[str(extraction_id)] = blob_name
+            mappings[str(extraction_id)] = {
+                'blob_name': blob_name,
+                'original_filename': original_filename,
+                'url': blob_url,
+                'timestamp': datetime.now().isoformat(),
+                'size': os.path.getsize(file_path)
+            }
             self._save_mappings(mappings)
             
-            logger.info(f"Image stored in Azure for extraction {extraction_id}")
+            logger.info(f"Image stored in Azure for extraction {extraction_id}: {original_filename}")
             return blob_url
             
         except Exception as e:
@@ -293,12 +349,14 @@ class AzureBlobImageStorage(BaseImageStorage):
     def get_image_path(self, extraction_id: int) -> Optional[str]:
         """Get the blob URL for an extraction ID."""
         mappings = self._load_mappings()
-        blob_name = mappings.get(str(extraction_id))
+        mapping = mappings.get(str(extraction_id))
         
-        if blob_name:
+        if mapping and 'url' in mapping:
+            return mapping['url']
+        elif mapping and 'blob_name' in mapping:
             blob_client = self.blob_service_client.get_blob_client(
                 container=self.container_name,
-                blob=blob_name
+                blob=mapping['blob_name']
             )
             return blob_client.url
         return None
@@ -306,13 +364,13 @@ class AzureBlobImageStorage(BaseImageStorage):
     def get_image_data(self, extraction_id: int) -> Optional[bytes]:
         """Get the image data from Azure Blob Storage."""
         mappings = self._load_mappings()
-        blob_name = mappings.get(str(extraction_id))
+        mapping = mappings.get(str(extraction_id))
         
-        if blob_name:
+        if mapping and 'blob_name' in mapping:
             try:
                 blob_client = self.blob_service_client.get_blob_client(
                     container=self.container_name,
-                    blob=blob_name
+                    blob=mapping['blob_name']
                 )
                 
                 if blob_client.exists():
@@ -322,6 +380,11 @@ class AzureBlobImageStorage(BaseImageStorage):
                 logger.error(f"Error getting image from Azure: {e}")
         
         return None
+    
+    def get_image_metadata(self, extraction_id: int) -> Optional[Dict[str, Any]]:
+        """Get metadata about the stored image."""
+        mappings = self._load_mappings()
+        return mappings.get(str(extraction_id))
     
     def cleanup_old_images(self, days: int = 7) -> int:
         """Remove images older than specified days from Azure."""
@@ -333,27 +396,26 @@ class AzureBlobImageStorage(BaseImageStorage):
         try:
             container_client = self.blob_service_client.get_container_client(self.container_name)
             
-            for extraction_id, blob_name in mappings.items():
-                try:
-                    blob_client = container_client.get_blob_client(blob_name)
-                    
-                    if blob_client.exists():
-                        properties = blob_client.get_blob_properties()
-                        
-                        if properties.last_modified.replace(tzinfo=None) < cutoff_date:
-                            blob_client.delete_blob()
+            for extraction_id, mapping in mappings.items():
+                if 'timestamp' in mapping:
+                    stored_date = datetime.fromisoformat(mapping['timestamp'])
+                    if stored_date < cutoff_date and 'blob_name' in mapping:
+                        try:
+                            # Delete all blobs in the extraction folder
+                            prefix = f"extractions/{extraction_id}/"
+                            for blob in container_client.list_blobs(name_starts_with=prefix):
+                                container_client.delete_blob(blob.name)
                             removed += 1
-                            logger.info(f"Removed old blob: {blob_name}")
-                        else:
-                            updated_mappings[extraction_id] = blob_name
+                            logger.info(f"Removed old extraction blobs: {prefix}")
+                        except Exception as e:
+                            logger.warning(f"Error deleting blob: {e}")
                     else:
-                        removed += 1
-                        
-                except Exception as e:
-                    logger.warning(f"Error processing blob {blob_name}: {e}")
+                        updated_mappings[extraction_id] = mapping
+                else:
+                    updated_mappings[extraction_id] = mapping
             
             self._save_mappings(updated_mappings)
-            logger.info(f"Azure cleanup complete: {removed} blobs removed")
+            logger.info(f"Azure cleanup complete: {removed} extractions removed")
             
         except Exception as e:
             logger.error(f"Error during Azure cleanup: {e}")
@@ -363,46 +425,21 @@ class AzureBlobImageStorage(BaseImageStorage):
     def get_storage_stats(self) -> Dict[str, Any]:
         """Get Azure storage statistics."""
         mappings = self._load_mappings()
-        total_size = 0
-        valid_images = 0
-        
-        try:
-            container_client = self.blob_service_client.get_container_client(self.container_name)
-            
-            for blob_name in mappings.values():
-                try:
-                    blob_client = container_client.get_blob_client(blob_name)
-                    if blob_client.exists():
-                        properties = blob_client.get_blob_properties()
-                        total_size += properties.size
-                        valid_images += 1
-                except:
-                    pass
-            
-        except Exception as e:
-            logger.error(f"Error getting Azure storage stats: {e}")
+        total_size = sum(m.get('size', 0) for m in mappings.values())
         
         return {
             'storage_type': 'azure_blob',
             'total_images': len(mappings),
-            'valid_images': valid_images,
+            'valid_images': len(mappings),  # Assume all are valid in Azure
             'total_size_mb': round(total_size / (1024 * 1024), 2),
             'container_name': self.container_name
         }
 
 class ImageStorageManager:
-    """
-    Unified image storage manager that can use either local or Azure storage.
-    """
+    """Unified image storage manager with original filename preservation."""
     
     def __init__(self, storage_type: str = 'local', **kwargs):
-        """
-        Initialize the appropriate storage backend.
-        
-        Args:
-            storage_type: 'local' or 'azure'
-            **kwargs: Additional arguments for the storage backend
-        """
+        """Initialize the appropriate storage backend."""
         self.storage_type = storage_type
         
         if storage_type == 'azure':
@@ -424,9 +461,9 @@ class ImageStorageManager:
         
         logger.info(f"ImageStorageManager initialized with {self.storage.__class__.__name__}")
     
-    def store_image(self, file_path: str, extraction_id: int) -> str:
-        """Store an image and associate it with an extraction ID."""
-        return self.storage.store_image(file_path, extraction_id)
+    def store_image(self, file_path: str, extraction_id: int, original_filename: str = None) -> str:
+        """Store an image preserving original filename."""
+        return self.storage.store_image(file_path, extraction_id, original_filename)
     
     def get_image_path(self, extraction_id: int) -> Optional[str]:
         """Get the stored image path/URL for an extraction ID."""
@@ -435,6 +472,10 @@ class ImageStorageManager:
     def get_image_data(self, extraction_id: int) -> Optional[bytes]:
         """Get the image data for an extraction ID."""
         return self.storage.get_image_data(extraction_id)
+    
+    def get_image_metadata(self, extraction_id: int) -> Optional[Dict[str, Any]]:
+        """Get metadata about the stored image."""
+        return self.storage.get_image_metadata(extraction_id)
     
     def cleanup_old_images(self, days: int = 7) -> int:
         """Remove images older than specified days."""

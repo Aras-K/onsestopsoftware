@@ -11,6 +11,7 @@ import io
 import logging
 import tempfile
 import pandas as pd
+from pathlib import Path
 
 # Import your existing components
 from radar_extraction_architecture import RadarType, RADAR_FIELDS
@@ -77,21 +78,43 @@ class WebProcessingHelper:
         
         logger.info("WebProcessingHelper initialized successfully")
     
-    async def process_single_image_async(self, image_path: str) -> Dict[str, Any]:
-        """Process a single image and return results for web display."""
+    async def process_single_image_async(self, image_path: str, original_filename: str = None) -> Dict[str, Any]:
+        """
+        Process a single image and return results for web display.
+        
+        Args:
+            image_path: Path to the image file (could be temp file)
+            original_filename: Original filename to preserve (if different from image_path)
+        """
         try:
+            # Use original filename if provided, otherwise use the basename of image_path
+            if original_filename is None:
+                original_filename = os.path.basename(image_path)
+            
+            # Get current timestamp for this extraction
+            extraction_timestamp = datetime.now()
+            
             # Process the image
             analysis = await self.extractor.extract_image(image_path)
             
-            # Save to database
+            # Override the filename in analysis with the original filename
+            analysis.filename = original_filename
+            
+            # Save to database with timestamp
             extraction_id = self.result_manager.process_extraction_result(
                 analysis, image_path
             )
             
-            # Store the image for later review if storage is available
+            # Store the image with original filename preserved
+            stored_image_path = None
             if self.image_storage and extraction_id:
                 try:
-                    self.image_storage.store_image(image_path, extraction_id)
+                    # Pass original filename to storage
+                    stored_image_path = self.image_storage.store_image(
+                        image_path, 
+                        extraction_id, 
+                        original_filename=original_filename
+                    )
                 except Exception as e:
                     logger.warning(f"Failed to store image for extraction {extraction_id}: {e}")
             
@@ -99,15 +122,18 @@ class WebProcessingHelper:
             result = {
                 'success': True,
                 'extraction_id': extraction_id,
-                'filename': analysis.filename,
+                'filename': original_filename,  # Use original filename
+                'original_filename': original_filename,
                 'radar_type': analysis.radar_type.value,
                 'overall_confidence': analysis.overall_confidence,
                 'processing_time': analysis.processing_time,
                 'requires_review': analysis.requires_review,
+                'extraction_timestamp': extraction_timestamp.isoformat(),  # Add timestamp
                 'fields_extracted': {},
                 'field_count': 0,
                 'validation_warnings': analysis.validation_errors,
-                'status': self._get_status(analysis.overall_confidence)
+                'status': self._get_status(analysis.overall_confidence),
+                'image_stored': stored_image_path is not None
             }
             
             # Add extracted fields
@@ -127,16 +153,43 @@ class WebProcessingHelper:
             return {
                 'success': False,
                 'error': str(e),
-                'filename': os.path.basename(image_path),
+                'filename': original_filename or os.path.basename(image_path),
+                'original_filename': original_filename or os.path.basename(image_path),
+                'extraction_timestamp': datetime.now().isoformat(),
                 'status': 'error'
             }
     
-    def process_single_image(self, image_path: str) -> Dict[str, Any]:
-        """Synchronous wrapper for process_single_image_async."""
+    def process_single_image(self, image_path: str, original_filename: str = None) -> Dict[str, Any]:
+        """
+        Synchronous wrapper for process_single_image_async.
+        
+        Args:
+            image_path: Path to the image file
+            original_filename: Original filename to preserve
+        """
+        try:
+            # Try to get the current event loop
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If we're in an async context, create a new thread
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(
+                        asyncio.run, 
+                        self.process_single_image_async(image_path, original_filename)
+                    )
+                    return future.result()
+        except RuntimeError:
+            # No event loop, create one
+            pass
+        
+        # Default behavior - create new event loop
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            return loop.run_until_complete(self.process_single_image_async(image_path))
+            return loop.run_until_complete(
+                self.process_single_image_async(image_path, original_filename)
+            )
         finally:
             loop.close()
     
@@ -176,13 +229,14 @@ class WebProcessingHelper:
     def get_review_items_for_web(self, limit: int = 50, status_filter: str = 'pending') -> List[Dict[str, Any]]:
         """
         Get review items formatted for web display with status filtering.
+        Enhanced to include original filename and timestamp.
         
         Args:
             limit: Maximum number of items to return
             status_filter: 'pending', 'success', 'all', or None for all items
         
         Returns:
-            List of formatted review items
+            List of formatted review items with images and original filenames
         """
         try:
             # Build the query based on status filter
@@ -272,12 +326,27 @@ class WebProcessingHelper:
                     else:
                         status = row[5] or 'pending'  # extraction_status
                     
+                    # Get image info if available
+                    image_info = self._get_image_info(extraction_id)
+                    
+                    # Format extraction timestamp
+                    extraction_time = row[4]
+                    if extraction_time:
+                        if isinstance(extraction_time, str):
+                            timestamp_str = extraction_time
+                        else:
+                            timestamp_str = extraction_time.isoformat()
+                    else:
+                        timestamp_str = datetime.now().isoformat()
+                    
                     web_item = {
                         'extraction_id': extraction_id,
-                        'filename': row[1],
+                        'filename': row[1],  # Original filename from database
+                        'original_filename': row[1],  # Preserve original name
                         'radar_type': row[2],
                         'overall_confidence': row[3] or 0,
-                        'timestamp': row[4].isoformat() if row[4] else None,
+                        'timestamp': timestamp_str,
+                        'extraction_timestamp': timestamp_str,  # Include both for compatibility
                         'status': status,
                         'processing_time': row[6],
                         'requires_review': row[7],
@@ -285,7 +354,9 @@ class WebProcessingHelper:
                         'review_timestamp': row[9].isoformat() if row[9] else None,
                         'review_notes': row[11],
                         'fields': fields,
-                        'has_image': self.image_storage is not None
+                        'has_image': image_info['has_image'],
+                        'image_path': image_info['image_path'],
+                        'image_base64': image_info['image_base64']
                     }
                     
                     web_items.append(web_item)
@@ -295,6 +366,37 @@ class WebProcessingHelper:
         except Exception as e:
             logger.error(f"Error getting review items: {e}")
             return []
+
+    def _get_image_info(self, extraction_id: int) -> Dict[str, Any]:
+        """
+        Get image information for an extraction.
+        
+        Returns:
+            Dictionary with image availability and data
+        """
+        image_info = {
+            'has_image': False,
+            'image_path': None,
+            'image_base64': None
+        }
+        
+        if self.image_storage:
+            try:
+                # Try to get image path
+                image_path = self.image_storage.get_image_path(extraction_id)
+                if image_path:
+                    image_info['has_image'] = True
+                    image_info['image_path'] = image_path
+                    
+                    # Try to get base64 data for display
+                    image_data = self.image_storage.get_image_data(extraction_id)
+                    if image_data:
+                        image_info['image_base64'] = base64.b64encode(image_data).decode('utf-8')
+                        
+            except Exception as e:
+                logger.debug(f"Could not get image for extraction {extraction_id}: {e}")
+        
+        return image_info
     
     def reopen_for_review(self, extraction_id: int, reason: str, reviewer: str) -> bool:
         """
@@ -723,7 +825,7 @@ class WebProcessingHelper:
     
     def get_recent_extractions(self, limit: int = 10, status_filter: str = None) -> List[Dict]:
         """
-        Get recent extractions for dashboard.
+        Get recent extractions for dashboard with timestamp and original filename.
         
         Args:
             limit: Maximum number of extractions to return
@@ -737,10 +839,11 @@ class WebProcessingHelper:
             for item in items:
                 recent.append({
                     'extraction_id': item['extraction_id'],
-                    'filename': item['filename'],
-                    'timestamp': item['timestamp'],
+                    'filename': item['original_filename'],  # Use original filename
+                    'extraction_timestamp': item['extraction_timestamp'],  # Full timestamp
+                    'timestamp': item['timestamp'],  # For compatibility
                     'status': item['status'],
-                    'confidence': item['overall_confidence'],
+                    'overall_confidence': item['overall_confidence'],
                     'field_count': len(item['fields']),
                     'reviewed_by': item.get('reviewed_by'),
                     'radar_type': item['radar_type']

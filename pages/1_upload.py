@@ -1,4 +1,4 @@
-# pages/1_Upload.py - Upload and Process Page with Integrated Image Storage (Azure Compatible)
+# pages/1_Upload.py - Upload and Process Page with Original Filename Preservation
 
 import streamlit as st
 import os
@@ -73,16 +73,17 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     st.success(f"✅ {len(uploaded_files)} image(s) ready for processing")
     
-    # Display file info
+    # Display file info with timestamps
     file_info = []
     total_size = 0
     for file in uploaded_files:
         size_mb = file.size / (1024 * 1024)
         total_size += size_mb
         file_info.append({
-            "File": file.name,
+            "File": file.name,  # Original filename
             "Size": f"{size_mb:.2f} MB",
-            "Type": file.type
+            "Type": file.type,
+            "Upload Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         })
     
     with st.expander(f"📁 File Details (Total: {total_size:.2f} MB)"):
@@ -117,19 +118,29 @@ if uploaded_files:
             progress_bar.progress(progress)
             status_text.text(f"Processing {idx+1}/{len(uploaded_files)}: {uploaded_file.name}")
             
+            # Get the original filename
+            original_filename = uploaded_file.name
+            
             # Save uploaded file to temporary location
             temp_path = None
             try:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
+                # Create temp file with same extension as original
+                file_extension = os.path.splitext(original_filename)[1]
+                with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as tmp_file:
                     tmp_file.write(uploaded_file.getbuffer())
                     temp_path = tmp_file.name
                 
-                # Process image using synchronous wrapper
-                result = st.session_state.web_helper.process_single_image(temp_path)
+                # Process image with original filename preserved
+                result = st.session_state.web_helper.process_single_image(
+                    temp_path, 
+                    original_filename=original_filename  # Pass original filename
+                )
                 
                 # Determine status
                 if result.get('success', False):
                     confidence = result.get('overall_confidence', 0)
+                    extraction_timestamp = result.get('extraction_timestamp', datetime.now().isoformat())
+                    
                     if confidence > 0.8:
                         status = "✅"
                         action = "Success"
@@ -148,53 +159,63 @@ if uploaded_files:
                     
                     results_data.append({
                         "Status": status,
-                        "Image": uploaded_file.name[:30] + "..." if len(uploaded_file.name) > 30 else uploaded_file.name,
+                        "Image": original_filename,  # Use original filename
                         "Confidence": f"{confidence:.1%}",
                         "Fields": f"{fields_extracted}/26",
                         "Time": f"{result.get('processing_time', 0):.1f}s",
+                        "Timestamp": extraction_timestamp,
                         "Action": action,
                         "extraction_id": result.get('extraction_id')
                     })
                     
-                    # Show inline success/warning
+                    # Show inline success/warning with timestamp
+                    timestamp_str = datetime.fromisoformat(extraction_timestamp).strftime("%H:%M:%S")
                     if confidence > 0.8:
-                        st.success(f"✅ {uploaded_file.name}: Processed successfully ({confidence:.1%} confidence)")
+                        st.success(f"✅ [{timestamp_str}] {original_filename}: Processed successfully ({confidence:.1%} confidence)")
                     elif confidence > 0.5:
-                        st.warning(f"⚠️ {uploaded_file.name}: Needs review ({confidence:.1%} confidence)")
+                        st.warning(f"⚠️ [{timestamp_str}] {original_filename}: Needs review ({confidence:.1%} confidence)")
                     else:
-                        st.error(f"❌ {uploaded_file.name}: Failed ({confidence:.1%} confidence)")
+                        st.error(f"❌ [{timestamp_str}] {original_filename}: Failed ({confidence:.1%} confidence)")
                         
                 else:
                     error_msg = result.get('error', 'Unknown error')
+                    current_timestamp = datetime.now().isoformat()
+                    
                     results_data.append({
                         "Status": "❌",
-                        "Image": uploaded_file.name[:30] + "..." if len(uploaded_file.name) > 30 else uploaded_file.name,
+                        "Image": original_filename,
                         "Confidence": "0%",
                         "Fields": "0/26",
                         "Time": "-",
+                        "Timestamp": current_timestamp,
                         "Action": "Error",
                         "extraction_id": None
                     })
-                    st.error(f"❌ {uploaded_file.name}: {error_msg}")
+                    st.error(f"❌ {original_filename}: {error_msg}")
                 
                 # Update results table
                 results_df = pd.DataFrame(results_data)
                 with results_placeholder.container():
+                    # Display results with timestamp
+                    display_columns = ['Status', 'Image', 'Confidence', 'Fields', 'Time', 'Action']
                     st.dataframe(
-                        results_df[['Status', 'Image', 'Confidence', 'Fields', 'Time', 'Action']], 
+                        results_df[display_columns], 
                         use_container_width=True, 
                         hide_index=True
                     )
                 
             except Exception as e:
-                logger.error(f"Error processing {uploaded_file.name}: {e}")
-                st.error(f"Error processing {uploaded_file.name}: {str(e)[:100]}")
+                logger.error(f"Error processing {original_filename}: {e}")
+                st.error(f"Error processing {original_filename}: {str(e)[:100]}")
+                
+                current_timestamp = datetime.now().isoformat()
                 results_data.append({
                     "Status": "❌",
-                    "Image": uploaded_file.name[:30] + "..." if len(uploaded_file.name) > 30 else uploaded_file.name,
+                    "Image": original_filename,
                     "Confidence": "0%",
                     "Fields": "0/26",
                     "Time": "-",
+                    "Timestamp": current_timestamp,
                     "Action": "Error",
                     "extraction_id": None
                 })
@@ -210,7 +231,8 @@ if uploaded_files:
         # Complete
         progress_bar.progress(1.0)
         elapsed_time = time.time() - start_time
-        status_text.text(f"✅ Processing complete! ({elapsed_time:.1f}s total)")
+        completion_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        status_text.text(f"✅ Processing complete at {completion_time}! ({elapsed_time:.1f}s total)")
         
         # Summary
         st.markdown("---")
@@ -237,12 +259,14 @@ if uploaded_files:
                 avg_time = elapsed_time / total if total > 0 else 0
                 st.metric("⏱️ Avg Time", f"{avg_time:.1f}s")
             
-            # Export results option
+            # Export results option with timestamps
             st.markdown("### 💾 Export Results")
             col1, col2 = st.columns(2)
             
             with col1:
-                csv = results_df.to_csv(index=False)
+                # Include timestamps in export
+                export_df = results_df.copy()
+                csv = export_df.to_csv(index=False)
                 st.download_button(
                     label="📥 Download Results CSV",
                     data=csv,
@@ -253,15 +277,14 @@ if uploaded_files:
             with col2:
                 if review > 0:
                     if st.button("👁️ Go to Review Queue", type="primary"):
-                        st.session_state.page = "review"
-                        st.rerun()
+                        st.switch_page("pages/2_Review.py")
             
             # Option to process more
             if st.button("📤 Upload More Images"):
                 st.rerun()
                     
 else:
-    # Instructions
+    # Instructions remain the same
     st.info("👆 Upload radar images to begin processing")
     
     col1, col2 = st.columns(2)
@@ -280,6 +303,7 @@ else:
             - Use high-resolution images
             - Ensure text is clearly visible
             - Full screen captures work best
+            - Original filenames are preserved
             """)
     
     with col2:
@@ -295,7 +319,14 @@ else:
             - ✅ **High confidence**: 80%+ accuracy
             - ⚠️ **Medium**: May need review
             - ❌ **Low**: Manual input needed
+            
+            ### Data Tracking:
+            - Extraction timestamp recorded
+            - Original filenames preserved
+            - Images stored for review
             """)
+
+# Sidebar info (rest remains the same)
 
 # Sidebar info
 with st.sidebar:
