@@ -323,14 +323,12 @@ class DatabaseManager:
                 and analysis.extraction_results[f.name].value is not None
             )
             
-            if extracted_required == len(required_fields) and analysis.overall_confidence > 0.9:
-                status = 'success'
-            elif analysis.requires_review or analysis.overall_confidence < 0.9:
-                status = 'review'  # This matches what the review query expects
+            if extracted_required == len(required_fields):
+                status = ExtractionStatus.SUCCESS
             elif extracted_required > 0:
-                status = 'partial'
+                status = ExtractionStatus.PARTIAL
             else:
-                status = 'failed'
+                status = ExtractionStatus.FAILED
             
             # Insert main extraction record using ON CONFLICT for upsert
             cursor.execute("""
