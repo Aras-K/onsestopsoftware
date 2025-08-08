@@ -50,7 +50,7 @@ if 'review_items' not in st.session_state:
     st.session_state.review_items = []
 
 if 'status_filter' not in st.session_state:
-    st.session_state.status_filter = 'pending'
+    st.session_state.status_filter = 'all'
 
 # Header
 st.title("👁️ Review Extraction Results")
