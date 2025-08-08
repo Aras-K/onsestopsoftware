@@ -622,7 +622,7 @@ class ConfidenceScorer:
         
         confidence = base_confidence.get(method, 0.5)
         
-        # Adjust based on validation
+        
         is_valid, _, error = validation_result
         if not is_valid:
             confidence *= 0.5

@@ -368,33 +368,51 @@ class WebProcessingHelper:
             return []
 
     def _get_image_info(self, extraction_id: int) -> Dict[str, Any]:
-        """
-        Get image information for an extraction.
-        
-        Returns:
-            Dictionary with image availability and data
-        """
+        """Get image information for an extraction."""
         image_info = {
             'has_image': False,
             'image_path': None,
             'image_base64': None
         }
         
+        # Try image storage first
         if self.image_storage:
             try:
-                # Try to get image path
                 image_path = self.image_storage.get_image_path(extraction_id)
                 if image_path:
                     image_info['has_image'] = True
                     image_info['image_path'] = image_path
                     
-                    # Try to get base64 data for display
                     image_data = self.image_storage.get_image_data(extraction_id)
                     if image_data:
                         image_info['image_base64'] = base64.b64encode(image_data).decode('utf-8')
-                        
+                        return image_info  # Success, return early
             except Exception as e:
-                logger.debug(f"Could not get image for extraction {extraction_id}: {e}")
+                logger.debug(f"Could not get image from storage for extraction {extraction_id}: {e}")
+        
+        # Fallback: Try to get from database
+        try:
+            with self.db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # First try: Get image path from extractions table
+                cursor.execute("""
+                    SELECT image_path FROM extractions 
+                    WHERE extraction_id = %s
+                """, (extraction_id,))
+                
+                result = cursor.fetchone()
+                if result and result[0]:
+                    image_path = result[0]
+                    # Try to read the file
+                    if os.path.exists(image_path):
+                        with open(image_path, 'rb') as f:
+                            image_data = f.read()
+                        image_info['has_image'] = True
+                        image_info['image_path'] = image_path
+                        image_info['image_base64'] = base64.b64encode(image_data).decode('utf-8')
+        except Exception as e:
+            logger.debug(f"Could not get image from database for extraction {extraction_id}: {e}")
         
         return image_info
     
