@@ -193,35 +193,39 @@ with img_col:
     st.markdown("### 🖼️ Original Image")
     
     # Try to display the image
-    if current_item.get('image_base64'):
-        # Display from base64 data
+    image_shown = False
+    b64_data = current_item.get('image_base64')
+    if not b64_data:
+        # Attempt to fetch base64 on demand
         try:
-            image_html = f'''
-            <div style="border: 2px solid #ddd; border-radius: 8px; padding: 10px; background: #f9f9f9;">
-                <img src="data:image/png;base64,{current_item['image_base64']}" 
-                     style="width: 100%; height: auto; border-radius: 4px;">
-                <p style="text-align: center; margin-top: 10px; color: #666;">
-                    {current_item.get('original_filename', 'Image')}
-                </p>
-            </div>
-            '''
-            st.markdown(image_html, unsafe_allow_html=True)
+            fetched = st.session_state.web_helper.get_image_as_base64(current_item['extraction_id'])
+            if fetched:
+                b64_data = fetched
         except Exception as e:
-            st.warning(f"Could not display image: {e}")
-            st.info("Image data is corrupted or unavailable")
-    elif current_item.get('image_path'):
+            logger.debug(f"On-demand image fetch failed: {e}")
+
+    if b64_data:
+        try:
+            img_bytes = base64.b64decode(b64_data)
+            st.image(img_bytes, caption=current_item.get('original_filename', 'Radar Image'), use_container_width=True)
+            image_shown = True
+        except Exception as e:
+            st.warning(f"Could not display base64 image: {e}")
+
+    if not image_shown and current_item.get('image_path'):
         # Display from path/URL
         try:
             st.image(current_item['image_path'], 
-                    caption=current_item.get('original_filename', 'Radar Image'),
-                    use_container_width=True)
-        except:
-            st.warning("Could not load image from storage")
+                     caption=current_item.get('original_filename', 'Radar Image'),
+                     use_container_width=True)
+            image_shown = True
+        except Exception as e:
+            st.warning(f"Could not load image from storage: {e}")
             st.info(f"Path: {current_item['image_path']}")
-    else:
+
+    if not image_shown:
         st.info("No image available for this extraction")
         st.markdown(f"**Filename:** {current_item.get('original_filename', 'Unknown')}")
-        
         # Option to reprocess if image is missing
         if st.button("🔄 Reprocess Image"):
             st.info("Reprocessing functionality not yet implemented")
@@ -507,7 +511,8 @@ with st.sidebar:
         )
     
     if st.button("📊 View Analytics", use_container_width=True):
-        st.switch_page("pages/3_Analytics.py")
+        # Navigate to the correct analytics page path in this repo
+        st.switch_page("pages/analytics.py")
     
     if st.button("🏠 Dashboard", use_container_width=True):
         st.switch_page("app.py")

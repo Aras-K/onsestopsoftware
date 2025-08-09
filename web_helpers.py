@@ -244,6 +244,15 @@ class WebProcessingHelper:
                 cursor = conn.cursor()
                 
                 base_query = """
+                    WITH latest_reviews AS (
+                        SELECT rh.extraction_id, rh.reviewer_name, rh.review_timestamp, rh.review_status, rh.review_notes
+                        FROM review_history rh
+                        JOIN (
+                            SELECT extraction_id, MAX(review_timestamp) AS max_ts
+                            FROM review_history
+                            GROUP BY extraction_id
+                        ) lr ON rh.extraction_id = lr.extraction_id AND rh.review_timestamp = lr.max_ts
+                    )
                     SELECT 
                         e.extraction_id,
                         e.filename,
@@ -258,7 +267,7 @@ class WebProcessingHelper:
                         r.review_status,
                         r.review_notes
                     FROM extractions e
-                    LEFT JOIN reviews r ON e.extraction_id = r.extraction_id
+                    LEFT JOIN latest_reviews r ON e.extraction_id = r.extraction_id
                 """
                 
                 # Apply status filter
@@ -267,15 +276,19 @@ class WebProcessingHelper:
                 
                 if status_filter == 'pending':
                     where_clauses.append("""
-                        (e.extraction_status = 'review' OR 
-                         e.extraction_status = 'pending' OR 
-                         e.requires_review = TRUE OR
-                         (e.extraction_status IS NULL AND e.overall_confidence < 0.8))
+                        (
+                            e.requires_review = TRUE
+                            OR e.extraction_status IN ('partial','failed','reprocessing')
+                            OR (r.review_status IN ('reopened','pending','in_progress'))
+                            OR (e.extraction_status IS NULL AND e.overall_confidence < 0.8)
+                        )
                     """)
                 elif status_filter == 'success':
                     where_clauses.append("""
-                        (e.extraction_status = 'success' OR 
-                         (r.review_status = 'approved' OR r.review_status = 'corrected'))
+                        (
+                            e.extraction_status = 'success' OR 
+                            (r.review_status = 'approved' OR r.review_status = 'corrected')
+                        )
                     """)
                 elif status_filter == 'failed':
                     where_clauses.append("e.extraction_status = 'failed'")
@@ -315,16 +328,25 @@ class WebProcessingHelper:
                             'method': field_row[4]
                         }
                     
-                    # Determine actual status
-                    if row[10]:  # review_status exists
-                        if row[10] in ['approved', 'corrected']:
+                    # Determine actual status for UI
+                    review_status = row[10]
+                    extraction_status = (row[5] or '').lower() if row[5] else None
+                    if review_status:
+                        if review_status in ['approved', 'corrected']:
                             status = 'success'
-                        elif row[10] == 'rejected':
+                        elif review_status == 'rejected':
                             status = 'rejected'
+                        elif review_status in ['reopened', 'pending', 'in_progress']:
+                            status = 'pending'
                         else:
                             status = 'pending'
                     else:
-                        status = row[5] or 'pending'  # extraction_status
+                        if extraction_status in ['success']:
+                            status = 'success'
+                        elif extraction_status in ['failed']:
+                            status = 'failed'
+                        else:  # partial, reprocessing, unknown
+                            status = 'pending'
                     
                     # Get image info if available
                     image_info = self._get_image_info(extraction_id)
@@ -442,7 +464,7 @@ class WebProcessingHelper:
                 
                 # Add a new review record indicating reopening
                 cursor.execute("""
-                    INSERT INTO reviews (
+                    INSERT INTO review_history (
                         extraction_id,
                         reviewer_name,
                         review_status,
@@ -579,7 +601,7 @@ class WebProcessingHelper:
                     SELECT 
                         COUNT(DISTINCT e.extraction_id) as reviewed_count
                     FROM extractions e
-                    JOIN reviews r ON e.extraction_id = r.extraction_id
+                    JOIN review_history r ON e.extraction_id = r.extraction_id
                     WHERE r.review_status IN ('approved', 'corrected')
                 """)
                 
@@ -682,7 +704,7 @@ class WebProcessingHelper:
                         COUNT(*) as total,
                         SUM(CASE WHEN extraction_status = 'success' 
                             OR extraction_id IN (
-                                SELECT extraction_id FROM reviews 
+                                SELECT extraction_id FROM review_history 
                                 WHERE review_status IN ('approved', 'corrected')
                             ) THEN 1 ELSE 0 END) as successful,
                         SUM(CASE WHEN extraction_status = 'failed' THEN 1 ELSE 0 END) as failed,
@@ -751,7 +773,7 @@ class WebProcessingHelper:
                             r.review_timestamp
                         FROM extractions e
                         LEFT JOIN extracted_fields ef ON e.extraction_id = ef.extraction_id
-                        LEFT JOIN reviews r ON e.extraction_id = r.extraction_id
+                        LEFT JOIN review_history r ON e.extraction_id = r.extraction_id
                         WHERE e.extraction_timestamp BETWEEN %s AND %s
                     """
                     
