@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import List, Tuple, Dict, Optional
 import logging
 from enum import Enum
-
+logger = logging.getLogger(__name__)
 class TargetType(Enum):
     VESSEL = "vessel"
     LANDMASS = "landmass"
@@ -31,37 +31,123 @@ class RadarTargetDetector:
         self.logger = logging.getLogger(__name__)
         
     def detect_targets(self, image_path: str, radar_type: str, 
-                      range_setting: float) -> List[RadarTarget]:
-        """
-        Main detection pipeline for targets.
-        
-        Args:
-            image_path: Path to radar image
-            radar_type: Type of radar (FURUNO, JRC, etc.)
-            range_setting: Current range setting in NM
-        """
-        # Load and preprocess image
-        image = cv2.imread(image_path)
-        if image is None:
+                    range_setting: float) -> List[RadarTarget]:
+        """Optimized target detection with performance improvements."""
+        try:
+            # Load and immediately resize for performance
+            image = cv2.imread(image_path)
+            if image is None:
+                return []
+            
+            # CRITICAL OPTIMIZATION: Work with smaller image
+            original_height, original_width = image.shape[:2]
+            max_dimension = 800  # Reduced from 1200
+            
+            if original_width > max_dimension or original_height > max_dimension:
+                scale = max_dimension / max(original_width, original_height)
+                new_width = int(original_width * scale)
+                new_height = int(original_height * scale)
+                image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+                scale_factor = original_width / new_width
+            else:
+                scale_factor = 1.0
+            
+            # Simplified radar detection - skip complex processing
+            h, w = image.shape[:2]
+            center = (w // 2, h // 2)
+            radius = min(w, h) // 2 - 20
+            
+            # FAST echo detection - simplified
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            
+            # Simple threshold instead of complex processing
+            threshold_value = 100 if "FURUNO" in radar_type else 120
+            _, thresh = cv2.threshold(gray, threshold_value, 255, cv2.THRESH_BINARY)
+            
+            # Small kernel for speed
+            kernel = np.ones((2,2), np.uint8)
+            cleaned = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
+            
+            # Find contours with approximation for speed
+            contours, _ = cv2.findContours(
+                cleaned, 
+                cv2.RETR_EXTERNAL, 
+                cv2.CHAIN_APPROX_SIMPLE  # Simple approximation is faster
+            )
+            
+            # Limit number of targets processed
+            MAX_TARGETS = 50
+            targets = []
+            
+            # Sort by area and process only largest contours
+            valid_contours = []
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area > 5:  # Minimum area threshold
+                    valid_contours.append((area, contour))
+            
+            # Sort by area and take only top MAX_TARGETS
+            valid_contours.sort(key=lambda x: x[0], reverse=True)
+            valid_contours = valid_contours[:MAX_TARGETS]
+            
+            for idx, (area, contour) in enumerate(valid_contours):
+                # Fast centroid calculation
+                M = cv2.moments(contour)
+                if M["m00"] == 0:
+                    continue
+                
+                cx = int(M["m10"] / M["m00"]) 
+                cy = int(M["m01"] / M["m00"])
+                
+                # Scale back to original coordinates if needed
+                if scale_factor != 1.0:
+                    cx = int(cx * scale_factor)
+                    cy = int(cy * scale_factor)
+                    area = area * (scale_factor ** 2)
+                
+                # Simplified position calculation
+                dx = cx - center[0]
+                dy = center[1] - cy
+                pixel_distance = np.sqrt(dx**2 + dy**2)
+                range_nm = (pixel_distance / radius) * range_setting if radius > 0 else 0
+                
+                # Skip if too far
+                if range_nm > range_setting * 1.2:
+                    continue
+                
+                bearing = np.degrees(np.arctan2(dx, dy))
+                if bearing < 0:
+                    bearing += 360
+                
+                # Simplified classification
+                if area > 500:
+                    target_type = TargetType.LANDMASS
+                elif area > 50:
+                    target_type = TargetType.VESSEL
+                elif area > 10:
+                    target_type = TargetType.OBSTACLE
+                else:
+                    target_type = TargetType.UNKNOWN
+                
+                # Simple confidence based on size
+                confidence = min(0.5 + (area / 1000), 0.95)
+                
+                targets.append(RadarTarget(
+                    target_id=idx,
+                    target_type=target_type,
+                    position=(range_nm, bearing),
+                    pixel_position=(cx, cy),
+                    size_estimate=np.sqrt(area) / radius * range_setting if radius > 0 else 0,
+                    confidence=confidence,
+                    echo_strength=confidence,
+                    is_moving=False  # Skip movement detection for speed
+                ))
+            
+            return targets[:MAX_TARGETS]  # Limit final results
+            
+        except Exception as e:
+            logger.error(f"Error in optimized target detection: {e}")
             return []
-        
-        # Find radar center and radius
-        center, radius = self._find_radar_display_area(image)
-        
-        # Extract radar display region
-        radar_region = self._extract_radar_region(image, center, radius)
-        
-        # Detect echo returns
-        echo_mask = self._detect_echo_returns(radar_region, radar_type)
-        
-        # Find and classify targets
-        targets = self._classify_targets(echo_mask, center, radius, range_setting)
-        
-        # Filter out clutter and false positives
-        targets = self._filter_targets(targets)
-        
-        return targets
-    
     def _find_radar_display_area(self, image: np.ndarray) -> Tuple[Tuple[int, int], int]:
         """Find the circular radar display area."""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)

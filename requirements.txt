@@ -20,7 +20,7 @@ numpy
 opencv-python-headless
 matplotlib
 pytesseract
-
+opencv-python
 # Utilities
 tqdm
 colorama
