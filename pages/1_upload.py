@@ -158,12 +158,16 @@ if uploaded_files:
                     
                     # Count extracted fields
                     fields_extracted = result.get('field_count', 0)
-                    
+                    target_count = 0
+                    if 'detected_targets' in result:
+                        target_count = result.get('detected_targets', {}).get('total', 0)
+
                     results_data.append({
                         "Status": status,
                         "Image": original_filename,  # Use original filename
                         "Confidence": f"{confidence:.1%}",
                         "Fields": f"{fields_extracted}/26",
+                        "Targets": str(target_count),
                         "Time": f"{result.get('processing_time', 0):.1f}s",
                         "Timestamp": extraction_timestamp,
                         "Action": action,
@@ -178,7 +182,39 @@ if uploaded_files:
                         st.warning(f"⚠️ [{timestamp_str}] {original_filename}: Needs review ({confidence:.1%} confidence)")
                     else:
                         st.error(f"❌ [{timestamp_str}] {original_filename}: Failed ({confidence:.1%} confidence)")
-                        
+                    # Display target detection results if available
+                    if result.get('success', False) and 'detected_targets' in result:
+                        targets = result.get('detected_targets', {})
+                        if targets.get('total', 0) > 0:
+                            with st.expander(f"🎯 Detected Targets: {targets.get('total', 0)} found"):
+                                tcol1, tcol2, tcol3, tcol4 = st.columns(4)
+                                
+                                with tcol1:
+                                    st.metric("🚢 Vessels", targets.get('vessels', 0))
+                                with tcol2:
+                                    st.metric("🏝️ Landmasses", targets.get('landmasses', 0))
+                                with tcol3:
+                                    st.metric("⚠️ Obstacles", targets.get('obstacles', 0))
+                                with tcol4:
+                                    st.metric("❓ Unknown", targets.get('unknown', 0))
+                                
+                                # Show target details if available
+                                if targets.get('targets'):
+                                    st.markdown("**Target Details:**")
+                                    for i, target in enumerate(targets['targets'][:5], 1):
+                                        target_icon = {
+                                            'vessel': '🚢',
+                                            'landmass': '🏝️',
+                                            'obstacle': '⚠️',
+                                            'unknown': '❓'
+                                        }.get(target['type'], '❓')
+                                        
+                                        st.text(f"{target_icon} {target['type'].upper()}: "
+                                            f"{target['range_nm']:.1f}NM @ {target['bearing_deg']:.0f}° "
+                                            f"(Confidence: {target['confidence']:.0%})")
+                                    
+                                    if len(targets['targets']) > 5:
+                                        st.text(f"... and {len(targets['targets']) - 5} more targets")   
                 else:
                     error_msg = result.get('error', 'Unknown error')
                     current_timestamp = datetime.now().isoformat()
@@ -199,7 +235,7 @@ if uploaded_files:
                 results_df = pd.DataFrame(results_data)
                 with results_placeholder.container():
                     # Display results with timestamp
-                    display_columns = ['Status', 'Image', 'Confidence', 'Fields', 'Time', 'Action']
+                    display_columns = ['Status', 'Image', 'Confidence', 'Fields', 'Targets', 'Time', 'Action']
                     st.dataframe(
                         results_df[display_columns], 
                         use_container_width=True, 

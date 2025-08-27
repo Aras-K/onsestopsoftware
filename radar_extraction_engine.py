@@ -17,7 +17,7 @@ import pytesseract
 import re
 import platform
 import subprocess
-
+import logging
 from openai import OpenAI
 import google.generativeai as genai
 
@@ -27,7 +27,15 @@ from radar_extraction_architecture import (
     ExtractionResult, RadarImageAnalysis, RADAR_FIELDS,
     RADAR_TYPE_FEATURES, SystemConfig
 )
-
+logger = logging.getLogger(__name__)
+try:
+    from radar_target_detection import RadarTargetDetector, TargetType
+    TARGET_DETECTION_AVAILABLE = True
+except ImportError:
+    logger.warning("Target detection module not available")
+    RadarTargetDetector = None
+    TargetType = None
+    TARGET_DETECTION_AVAILABLE = False
 # Configure logging with detailed formatting
 logging.basicConfig(
     level=logging.INFO,
@@ -646,7 +654,14 @@ class HybridRadarExtractor:
         self.ocr_extractor = OCRExtractor()
         self.validator = ValidationEngine()
         self.scorer = ConfidenceScorer()
-        
+        self.target_detector = None
+
+        if TARGET_DETECTION_AVAILABLE:
+            try:
+                self.target_detector = RadarTargetDetector()
+                logger.info("Target detection system initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize target detector: {e}")
         # Check if learning system is available (optional)
         self.learning_system = None
         self.adaptive_engine = None
@@ -659,7 +674,184 @@ class HybridRadarExtractor:
             logger.info("Learning system not available - running without adaptive features")
         
         logger.info("Hybrid Radar Extractor initialized")
+    # In radar_extraction_engine.py, add this method to HybridRadarExtractor class:
+
+    async def extract_with_target_detection(self, image_path: str, 
+                                        skip_field_extraction: bool = False,
+                                        detection_params: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Extract data with enhanced target detection capabilities.
+        
+        Args:
+            image_path: Path to radar image
+            skip_field_extraction: If True, only perform target detection
+            detection_params: Optional parameters for target detection
+                - min_target_size: Minimum target size in pixels
+                - confidence_threshold: Minimum confidence for detection
+                - detect_vessels: Enable vessel detection
+                - detect_landmasses: Enable landmass detection
+                - detect_obstacles: Enable obstacle detection
+        
+        Returns:
+            Dictionary containing extraction results and detected targets
+        """
+        
+        result = {
+            'filename': os.path.basename(image_path),
+            'timestamp': datetime.now().isoformat(),
+            'field_extraction': None,
+            'target_detection': None
+        }
+        
+        # Field extraction (unless skipped)
+        if not skip_field_extraction:
+            analysis = await self.extract_image(image_path)
+            result['field_extraction'] = {
+                'radar_type': analysis.radar_type.value,
+                'confidence': analysis.overall_confidence,
+                'fields': {
+                    k: {'value': v.value, 'confidence': v.confidence}
+                    for k, v in analysis.extraction_results.items()
+                }
+            }
+            range_setting = 12.0  # Default
+            if 'range' in analysis.extraction_results:
+                try:
+                    range_setting = float(analysis.extraction_results['range'].value)
+                except:
+                    pass
+            radar_type = analysis.radar_type.value
+        else:
+            # Manual radar type detection for target detection only
+            detector = RadarTypeDetector()
+            radar_type, _ = detector.detect_radar_type(image_path)
+            radar_type = radar_type.value
+            range_setting = detection_params.get('range_setting', 12.0) if detection_params else 12.0
+        
+        # Target detection
+        if self.target_detector:
+            try:
+                # Apply custom detection parameters if provided
+                if detection_params:
+                    # You could pass these to the detect_targets method
+                    # For now, using standard detection
+                    pass
+                
+                targets = self.target_detector.detect_targets(
+                    image_path,
+                    radar_type,
+                    range_setting
+                )
+                
+                # Group targets by type
+                target_groups = {
+                    'vessels': [],
+                    'landmasses': [],
+                    'obstacles': [],
+                    'unknown': []
+                }
+                
+                for target in targets:
+                    target_data = {
+                        'id': target.target_id,
+                        'range_nm': round(target.position[0], 2),
+                        'bearing_deg': round(target.position[1], 1),
+                        'confidence': round(target.confidence, 2),
+                        'size_estimate_nm': round(target.size_estimate, 3),
+                        'is_moving': target.is_moving,
+                        'pixel_position': target.pixel_position
+                    }
+                    
+                    if target.target_type.value == 'vessel':
+                        target_groups['vessels'].append(target_data)
+                    elif target.target_type.value == 'landmass':
+                        target_groups['landmasses'].append(target_data)
+                    elif target.target_type.value == 'obstacle':
+                        target_groups['obstacles'].append(target_data)
+                    else:
+                        target_groups['unknown'].append(target_data)
+                
+                result['target_detection'] = {
+                    'success': True,
+                    'range_setting_nm': range_setting,
+                    'radar_type': radar_type,
+                    'summary': {
+                        'total_targets': len(targets),
+                        'vessels': len(target_groups['vessels']),
+                        'landmasses': len(target_groups['landmasses']),
+                        'obstacles': len(target_groups['obstacles']),
+                        'unknown': len(target_groups['unknown'])
+                    },
+                    'targets_by_type': target_groups,
+                    'collision_risks': self._assess_collision_risks(target_groups['vessels'])
+                }
+                
+            except Exception as e:
+                logger.error(f"Target detection failed: {e}")
+                result['target_detection'] = {
+                    'success': False,
+                    'error': str(e)
+                }
+        else:
+            result['target_detection'] = {
+                'success': False,
+                'error': 'Target detection module not available'
+            }
+        
+        return result
+
+    def _assess_collision_risks(self, vessels: List[Dict]) -> List[Dict]:
+        """
+        Assess collision risks based on detected vessels.
+        
+        Args:
+            vessels: List of detected vessel targets
+        
+        Returns:
+            List of collision risk assessments
+        """
+        risks = []
+        
+        for vessel in vessels:
+            # Simple risk assessment based on range
+            range_nm = vessel['range_nm']
+            
+            if range_nm < 1.0:
+                risk_level = 'CRITICAL'
+                action = 'Immediate action required'
+            elif range_nm < 3.0:
+                risk_level = 'HIGH'
+                action = 'Close monitoring required'
+            elif range_nm < 6.0:
+                risk_level = 'MEDIUM'
+                action = 'Monitor situation'
+            else:
+                risk_level = 'LOW'
+                action = 'Normal monitoring'
+            
+            if vessel['is_moving']:
+                # Moving targets are higher risk
+                if risk_level == 'LOW':
+                    risk_level = 'MEDIUM'
+                elif risk_level == 'MEDIUM':
+                    risk_level = 'HIGH'
+            
+            risks.append({
+                'target_id': vessel['id'],
+                'range_nm': range_nm,
+                'bearing_deg': vessel['bearing_deg'],
+                'risk_level': risk_level,
+                'action_required': action,
+                'is_moving': vessel['is_moving']
+            })
+        
+        # Sort by risk level and range
+        risk_order = {'CRITICAL': 0, 'HIGH': 1, 'MEDIUM': 2, 'LOW': 3}
+        risks.sort(key=lambda x: (risk_order[x['risk_level']], x['range_nm']))
+        
+        return risks
     
+
     async def extract_image(self, image_path: str) -> RadarImageAnalysis:
         """Extract all data from a radar image using the hybrid approach."""
         start_time = datetime.now()
@@ -810,6 +1002,59 @@ class HybridRadarExtractor:
         logger.info(f"Extraction complete: {filename} "
                    f"(confidence: {overall_confidence:.2f}, "
                    f"review needed: {requires_review})")
+        if self.target_detector:
+            try:
+                # Get range setting from extracted fields
+                range_setting = 12.0  # Default
+                if 'range' in extraction_results:
+                    range_value = extraction_results['range'].value
+                    if range_value:
+                        try:
+                            range_setting = float(range_value)
+                            logger.info(f"Using extracted range setting: {range_setting} NM")
+                        except (ValueError, TypeError):
+                            logger.warning(f"Could not parse range value: {range_value}")
+                
+                # Detect targets
+                detected_targets = self.target_detector.detect_targets(
+                    image_path,
+                    radar_type.value,
+                    range_setting
+                )
+                
+                # Add detected targets to metadata
+                analysis.metadata['detected_targets'] = {
+                    'vessels': len([t for t in detected_targets if t.target_type == TargetType.VESSEL]),
+                    'landmasses': len([t for t in detected_targets if t.target_type == TargetType.LANDMASS]),
+                    'obstacles': len([t for t in detected_targets if t.target_type == TargetType.OBSTACLE]),
+                    'unknown': len([t for t in detected_targets if t.target_type == TargetType.UNKNOWN]),
+                    'total': len(detected_targets),
+                    'targets': [
+                        {
+                            'type': t.target_type.value,
+                            'range_nm': round(t.position[0], 2),
+                            'bearing_deg': round(t.position[1], 1),
+                            'confidence': round(t.confidence, 3),
+                            'size_estimate': round(t.size_estimate, 3),
+                            'is_moving': t.is_moving
+                        }
+                        for t in detected_targets
+                    ]
+                }
+                
+                logger.info(f"Detected {len(detected_targets)} targets in {filename}")
+                
+            except Exception as e:
+                logger.error(f"Target detection failed for {filename}: {e}")
+                analysis.metadata['detected_targets'] = {
+                    'error': str(e),
+                    'total': 0
+                }
+        
+        logger.info(f"Extraction complete: {filename} "
+                   f"(confidence: {overall_confidence:.2f}, "
+                   f"review needed: {requires_review})")
+        
         
         return analysis
     
@@ -883,9 +1128,100 @@ async def test_single_image(image_path: str, api_keys: Dict[str, str] = None):
             print(f"  - {warning}")
     
     return result
+# Add this test function at the bottom of radar_extraction_engine.py
 
+async def test_target_detection(image_path: str, output_dir: str = "target_detection_results"):
+    """Test the complete extraction pipeline with target detection."""
+    import os
+    import json
+    from radar_visualization import RadarVisualization
+    
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+    
+    print(f"\n{'='*60}")
+    print(f"Testing Target Detection on: {os.path.basename(image_path)}")
+    print(f"{'='*60}")
+    
+    # Initialize extractor
+    extractor = HybridRadarExtractor()
+    
+    # Run extraction with target detection
+    result = await extractor.extract_image(image_path)
+    
+    # Display results
+    print(f"\n📊 EXTRACTION RESULTS:")
+    print(f"  Radar Type: {result.radar_type.value}")
+    print(f"  Overall Confidence: {result.overall_confidence:.2%}")
+    print(f"  Fields Extracted: {len(result.extraction_results)}")
+    
+    # Display target detection results
+    if 'detected_targets' in result.metadata:
+        targets = result.metadata['detected_targets']
+        
+        print(f"\n🎯 TARGET DETECTION RESULTS:")
+        print(f"  Total Targets: {targets.get('total', 0)}")
+        print(f"  - Vessels: {targets.get('vessels', 0)}")
+        print(f"  - Landmasses: {targets.get('landmasses', 0)}")
+        print(f"  - Obstacles: {targets.get('obstacles', 0)}")
+        print(f"  - Unknown: {targets.get('unknown', 0)}")
+        
+        # Show detailed target info
+        if 'targets' in targets and targets['targets']:
+            print(f"\n📍 DETAILED TARGET INFORMATION:")
+            for i, target in enumerate(targets['targets'][:5], 1):  # Show first 5
+                print(f"\n  Target {i}:")
+                print(f"    Type: {target['type']}")
+                print(f"    Range: {target['range_nm']:.2f} NM")
+                print(f"    Bearing: {target['bearing_deg']:.1f}°")
+                print(f"    Confidence: {target['confidence']:.1%}")
+                print(f"    Moving: {'Yes' if target['is_moving'] else 'No'}")
+        
+        # Create visualization
+        try:
+            viz = RadarVisualization()
+            base_name = os.path.splitext(os.path.basename(image_path))[0]
+            viz_path = os.path.join(output_dir, f"{base_name}_targets.png")
+            
+            viz_image = viz.visualize_targets(image_path, targets)
+            if viz_image is not None:
+                import cv2
+                cv2.imwrite(viz_path, viz_image)
+                print(f"\n✅ Visualization saved to: {viz_path}")
+        except Exception as e:
+            print(f"\n⚠️ Could not create visualization: {e}")
+    else:
+        print(f"\n❌ No target detection results available")
+    
+    # Save results to JSON
+    results_file = os.path.join(output_dir, f"{result.filename}_results.json")
+    results_data = {
+        'filename': result.filename,
+        'radar_type': result.radar_type.value,
+        'confidence': result.overall_confidence,
+        'targets': result.metadata.get('detected_targets', {})
+    }
+    
+    with open(results_file, 'w') as f:
+        json.dump(results_data, f, indent=2)
+    
+    print(f"📄 Results saved to: {results_file}")
+    print(f"\n{'='*60}\n")
+    
+    return result
+
+# Add this to run the test
 if __name__ == "__main__":
-    # Example usage
-    test_image = "radar_image.png"
+    import sys
+    
+    if len(sys.argv) > 1:
+        test_image = sys.argv[1]
+    else:
+        # Use a default test image
+        test_image = "radar_image.png"
+    
     if os.path.exists(test_image):
-        asyncio.run(test_single_image(test_image))
+        asyncio.run(test_target_detection(test_image))
+    else:
+        print(f"Image not found: {test_image}")
+        print("Usage: python radar_extraction_engine.py <image_path>")

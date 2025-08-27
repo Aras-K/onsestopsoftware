@@ -199,7 +199,34 @@ class DatabaseManager:
                     FOREIGN KEY (extraction_id) REFERENCES extractions(extraction_id) ON DELETE CASCADE
                 )
             """)
-            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS detected_targets (
+                    target_id SERIAL PRIMARY KEY,
+                    extraction_id INTEGER NOT NULL,
+                    target_type TEXT NOT NULL,
+                    range_nm REAL NOT NULL,
+                    bearing_deg REAL NOT NULL,
+                    size_estimate REAL,
+                    confidence REAL NOT NULL,
+                    echo_strength REAL,
+                    is_moving BOOLEAN,
+                    pixel_x INTEGER,
+                    pixel_y INTEGER,
+                    detection_timestamp TIMESTAMP NOT NULL,
+                    FOREIGN KEY (extraction_id) REFERENCES extractions(extraction_id) ON DELETE CASCADE
+                )
+            """)
+
+            # Add indexes for better query performance
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_detected_targets_extraction 
+                ON detected_targets(extraction_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_detected_targets_type 
+                ON detected_targets(target_type)
+            """)
             # Review history table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS review_history (
@@ -389,7 +416,25 @@ class DatabaseManager:
                     result.error,
                     result.processing_time
                 ))
-            
+            if 'detected_targets' in analysis.metadata:
+                targets_data = analysis.metadata.get('detected_targets', {})
+                if 'targets' in targets_data:
+                    for target in targets_data['targets']:
+                        cursor.execute("""
+                            INSERT INTO detected_targets (
+                                extraction_id, target_type, range_nm, bearing_deg,
+                                size_estimate, confidence, is_moving, detection_timestamp
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (
+                            extraction_id,
+                            target['type'],
+                            target['range_nm'],
+                            target['bearing_deg'],
+                            target.get('size_estimate', 0),
+                            target['confidence'],
+                            target.get('is_moving', False),
+                            datetime.now()
+                        ))
             # Add to review queue if needed
             if analysis.requires_review:
                 priority = self._calculate_review_priority(analysis)
