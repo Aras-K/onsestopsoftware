@@ -4,7 +4,7 @@ import numpy as np
 from typing import List, Dict, Tuple
 import logging
 from radar_target_detection import TargetType
-
+from datetime import datetime
 logger = logging.getLogger(__name__)
 
 class RadarVisualization:
@@ -12,103 +12,115 @@ class RadarVisualization:
     
     @staticmethod
     def visualize_targets(image_path: str, targets_metadata: Dict) -> np.ndarray:
-        """
-        Draw detected targets on radar image.
-        
-        Args:
-            image_path: Path to original radar image
-            targets_metadata: Dictionary containing detected targets from metadata
-        
-        Returns:
-            Image with visualized targets
-        """
-        # Load image
+        """Draw detected targets on radar image with professional annotations."""
         image = cv2.imread(image_path)
         if image is None:
-            logger.error(f"Could not load image: {image_path}")
             return None
         
-        # Get targets list
-        targets = targets_metadata.get('targets', [])
+        # Create a copy for annotation
+        annotated = image.copy()
         
-        # Find radar center and radius (simplified - you may need to adjust)
+        # Add semi-transparent overlay for better visibility
+        overlay = annotated.copy()
+        
+        targets = targets_metadata.get('targets', [])
         h, w = image.shape[:2]
         center = (w // 2, h // 2)
         radius = min(w, h) // 2 - 50
         
-        # Draw each target
+        # Draw targets
         for target in targets:
-            # Convert radar coordinates to pixel coordinates
             range_nm = target['range_nm']
             bearing_deg = target['bearing_deg']
             
-            # Calculate pixel position
-            # Convert bearing to radians (0° = North = up)
-            bearing_rad = np.radians(bearing_deg - 90)  # Adjust for screen coordinates
-            
-            # Scale range to pixels (assuming full radius = range setting)
-            # You might need to get actual range setting
-            max_range = targets_metadata.get('range_setting', 12.0)
+            # Calculate position
+            bearing_rad = np.radians(bearing_deg - 90)
+            max_range = 12.0  # Default max range
             pixel_distance = (range_nm / max_range) * radius
             
             x = int(center[0] + pixel_distance * np.cos(bearing_rad))
             y = int(center[1] + pixel_distance * np.sin(bearing_rad))
             
-            # Choose color based on target type
+            # Color and style based on type
             target_type = target['type']
             if target_type == 'vessel':
-                color = (0, 255, 0)  # Green
-                symbol = 'V'
+                color = (0, 255, 0)
+                thickness = 2
+                radius_circle = 12
             elif target_type == 'landmass':
-                color = (255, 165, 0)  # Orange
-                symbol = 'L'
+                color = (0, 165, 255)
+                thickness = 3
+                radius_circle = 15
             elif target_type == 'obstacle':
-                color = (255, 0, 0)  # Red
-                symbol = 'O'
+                color = (0, 0, 255)
+                thickness = 2
+                radius_circle = 10
             else:
-                color = (128, 128, 128)  # Gray
-                symbol = '?'
+                color = (128, 128, 128)
+                thickness = 1
+                radius_circle = 8
             
-            # Draw target marker
-            cv2.circle(image, (x, y), 8, color, 2)
+            # Draw on overlay
+            cv2.circle(overlay, (x, y), radius_circle, color, thickness)
             
-            # Add label
-            label = f"{symbol} {target['confidence']:.0%}"
-            cv2.putText(image, label, (x + 10, y - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            # Add crosshair for vessels
+            if target_type == 'vessel':
+                cv2.line(overlay, (x-15, y), (x+15, y), color, 1)
+                cv2.line(overlay, (x, y-15), (x, y+15), color, 1)
             
-            # Draw range/bearing info
-            info = f"{range_nm:.1f}NM/{bearing_deg:.0f}°"
-            cv2.putText(image, info, (x + 10, y + 20),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+            # Add text label with background
+            label = f"{range_nm:.1f}NM"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.4
+            thickness_text = 1
             
-            # Draw movement indicator if moving
-            if target.get('is_moving', False):
-                # Draw arrow indicating movement
-                cv2.arrowedLine(image, (x, y), 
-                              (x + 20, y - 20), color, 2)
+            # Get text size for background
+            (text_width, text_height), _ = cv2.getTextSize(label, font, font_scale, thickness_text)
+            
+            # Draw background rectangle
+            cv2.rectangle(overlay, 
+                        (x + 10, y - text_height - 2),
+                        (x + 10 + text_width + 4, y + 2),
+                        (0, 0, 0), -1)
+            
+            # Draw text
+            cv2.putText(overlay, label, (x + 12, y),
+                    font, font_scale, color, thickness_text)
         
-        # Add summary box
-        summary = targets_metadata.get('summary', {})
-        if summary:
-            # Draw summary in corner
-            y_offset = 30
-            cv2.putText(image, "DETECTED TARGETS:", (10, y_offset),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            y_offset += 25
-            
-            cv2.putText(image, f"Vessels: {summary.get('vessels', 0)}", 
-                       (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            y_offset += 20
-            
-            cv2.putText(image, f"Landmasses: {summary.get('landmasses', 0)}", 
-                       (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
-            y_offset += 20
-            
-            cv2.putText(image, f"Obstacles: {summary.get('obstacles', 0)}", 
-                       (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+        # Blend overlay with original
+        cv2.addWeighted(overlay, 0.7, annotated, 0.3, 0, annotated)
         
-        return image
+        # Add legend
+        legend_y = 30
+        legend_x = w - 200
+        
+        # Legend background
+        cv2.rectangle(annotated, (legend_x - 10, 10), (w - 10, 130), (0, 0, 0), -1)
+        cv2.rectangle(annotated, (legend_x - 10, 10), (w - 10, 130), (255, 255, 255), 1)
+        
+        # Legend title
+        cv2.putText(annotated, "TARGETS", (legend_x, legend_y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # Legend items
+        items = [
+            (targets_metadata.get('vessels', 0), "Vessels", (0, 255, 0)),
+            (targets_metadata.get('landmasses', 0), "Landmasses", (0, 165, 255)),
+            (targets_metadata.get('obstacles', 0), "Obstacles", (0, 0, 255))
+        ]
+        
+        for i, (count, name, color) in enumerate(items):
+            y_pos = legend_y + 30 + (i * 25)
+            cv2.circle(annotated, (legend_x + 10, y_pos), 5, color, -1)
+            cv2.putText(annotated, f"{name}: {count}", (legend_x + 25, y_pos + 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        # Add timestamp
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cv2.putText(annotated, timestamp, (10, h - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        
+        return annotated
     
     @staticmethod
     def save_visualization(image_path: str, targets_metadata: Dict, 

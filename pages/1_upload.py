@@ -9,8 +9,9 @@ from datetime import datetime
 import pandas as pd
 import time
 import logging
-
-
+from radar_visualization import RadarVisualization
+import cv2
+from PIL import Image
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -32,6 +33,16 @@ st.set_page_config(
     layout="wide"
 )
 
+def _assess_risk_level(range_nm):
+    """Assess collision risk based on range."""
+    if range_nm < 1.0:
+        return "CRITICAL"
+    elif range_nm < 3.0:
+        return "HIGH"
+    elif range_nm < 6.0:
+        return "MEDIUM"
+    else:
+        return "LOW"
 # Initialize session state
 if 'api_keys' not in st.session_state:
     st.session_state.api_keys = {
@@ -186,35 +197,92 @@ if uploaded_files:
                     if result.get('success', False) and 'detected_targets' in result:
                         targets = result.get('detected_targets', {})
                         if targets.get('total', 0) > 0:
-                            with st.expander(f"🎯 Detected Targets: {targets.get('total', 0)} found"):
-                                tcol1, tcol2, tcol3, tcol4 = st.columns(4)
+                            # Create professional visualization
+                            st.markdown("### 🎯 Target Detection Analysis")
+                            
+                            # Summary metrics
+                            col1, col2, col3, col4 = st.columns(4)
+                            with col1:
+                                st.metric("🚢 Vessels", targets.get('vessels', 0))
+                            with col2:
+                                st.metric("🏝️ Landmasses", targets.get('landmasses', 0))
+                            with col3:
+                                st.metric("⚠️ Obstacles", targets.get('obstacles', 0))
+                            with col4:
+                                st.metric("Total Detected", targets.get('total', 0))
+                            
+                            # Side-by-side comparison
+                            try:
+                                viz = RadarVisualization()
+                                viz_image = viz.visualize_targets(temp_path, targets)
                                 
-                                with tcol1:
-                                    st.metric("🚢 Vessels", targets.get('vessels', 0))
-                                with tcol2:
-                                    st.metric("🏝️ Landmasses", targets.get('landmasses', 0))
-                                with tcol3:
-                                    st.metric("⚠️ Obstacles", targets.get('obstacles', 0))
-                                with tcol4:
-                                    st.metric("❓ Unknown", targets.get('unknown', 0))
-                                
-                                # Show target details if available
-                                if targets.get('targets'):
-                                    st.markdown("**Target Details:**")
-                                    for i, target in enumerate(targets['targets'][:5], 1):
-                                        target_icon = {
-                                            'vessel': '🚢',
-                                            'landmass': '🏝️',
-                                            'obstacle': '⚠️',
-                                            'unknown': '❓'
-                                        }.get(target['type'], '❓')
-                                        
-                                        st.text(f"{target_icon} {target['type'].upper()}: "
-                                            f"{target['range_nm']:.1f}NM @ {target['bearing_deg']:.0f}° "
-                                            f"(Confidence: {target['confidence']:.0%})")
+                                if viz_image is not None:
+                                    # Load original for comparison
+                                    original_img = Image.open(temp_path)
                                     
-                                    if len(targets['targets']) > 5:
-                                        st.text(f"... and {len(targets['targets']) - 5} more targets")   
+                                    # Convert visualization to PIL
+                                    viz_pil = Image.fromarray(cv2.cvtColor(viz_image, cv2.COLOR_BGR2RGB))
+                                    
+                                    # Display side by side
+                                    col_orig, col_viz = st.columns(2)
+                                    
+                                    with col_orig:
+                                        st.markdown("**Original Radar Image**")
+                                        st.image(original_img, use_column_width=True)
+                                    
+                                    with col_viz:
+                                        st.markdown("**Detected Targets**")
+                                        st.image(viz_pil, use_column_width=True)
+                                    
+                                    # Detailed target list
+                                    if targets.get('targets'):
+                                        with st.expander("📊 Detailed Target Information"):
+                                            # Create a table of targets
+                                            target_data = []
+                                            for i, target in enumerate(targets['targets'], 1):
+                                                target_data.append({
+                                                    "ID": i,
+                                                    "Type": target['type'].upper(),
+                                                    "Range (NM)": f"{target['range_nm']:.1f}",
+                                                    "Bearing (°)": f"{target['bearing_deg']:.0f}",
+                                                    "Confidence": f"{target['confidence']:.0%}",
+                                                    "Moving": "Yes" if target.get('is_moving') else "No",
+                                                    "Risk": _assess_risk_level(target['range_nm'])
+                                                })
+                                            
+                                            df_targets = pd.DataFrame(target_data)
+                                            st.dataframe(df_targets, use_container_width=True, hide_index=True)
+                                            
+                                            # Risk summary
+                                            critical = sum(1 for t in target_data if t['Risk'] == 'CRITICAL')
+                                            high = sum(1 for t in target_data if t['Risk'] == 'HIGH')
+                                            
+                                            if critical > 0:
+                                                st.error(f"⚠️ {critical} target(s) require immediate attention (< 1 NM)")
+                                            if high > 0:
+                                                st.warning(f"📍 {high} target(s) require close monitoring (< 3 NM)")
+                                    
+                                    # Save annotated image
+                                    annotated_filename = f"{os.path.splitext(original_filename)[0]}_annotated.png"
+                                    result['annotated_image'] = viz_pil
+                                    result['annotated_filename'] = annotated_filename
+                                    if 'annotated_image' in result:
+ 
+                                        from io import BytesIO
+                                        buf = BytesIO()
+                                        result['annotated_image'].save(buf, format='PNG')
+                                        byte_data = buf.getvalue()
+                                        
+                                        st.download_button(
+                                            label="📥 Download Annotated Image",
+                                            data=byte_data,
+                                            file_name=result['annotated_filename'],
+                                            mime="image/png"
+                                        ) 
+                            except Exception as e:
+                                logger.error(f"Visualization error: {e}")
+                                st.error("Could not generate target visualization")
+                            
                 else:
                     error_msg = result.get('error', 'Unknown error')
                     current_timestamp = datetime.now().isoformat()
@@ -224,6 +292,7 @@ if uploaded_files:
                         "Image": original_filename,
                         "Confidence": "0%",
                         "Fields": "0/26",
+                        "Targets": "0",  # Add this line
                         "Time": "-",
                         "Timestamp": current_timestamp,
                         "Action": "Error",
