@@ -38,7 +38,7 @@ class RadarTargetDetector:
             image = cv2.imread(image_path)
             if image is None:
                 return []
-            
+            logger.info(f"Processing image: {image_path}, radar_type: {radar_type}, range: {range_setting}")
             # CRITICAL OPTIMIZATION: Work with smaller image
             original_height, original_width = image.shape[:2]
             max_dimension = 800  # Reduced from 1200
@@ -61,7 +61,7 @@ class RadarTargetDetector:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             
             # Simple threshold instead of complex processing
-            threshold_value = 100 if "FURUNO" in radar_type else 120
+            threshold_value = 50 if "FURUNO" in radar_type else 70
             _, thresh = cv2.threshold(gray, threshold_value, 255, cv2.THRESH_BINARY)
             
             # Small kernel for speed
@@ -78,7 +78,7 @@ class RadarTargetDetector:
             # Limit number of targets processed
             MAX_TARGETS = 50
             targets = []
-            
+            logger.info(f"Found {len(contours)} potential targets before filtering")
             # Sort by area and process only largest contours
             valid_contours = []
             for contour in contours:
@@ -120,11 +120,11 @@ class RadarTargetDetector:
                     bearing += 360
                 
                 # Simplified classification
-                if area > 500:
+                if area > 300:
                     target_type = TargetType.LANDMASS
-                elif area > 50:
+                elif area > 20:
                     target_type = TargetType.VESSEL
-                elif area > 10:
+                elif area > 5:
                     target_type = TargetType.OBSTACLE
                 else:
                     target_type = TargetType.UNKNOWN
@@ -142,7 +142,7 @@ class RadarTargetDetector:
                     echo_strength=confidence,
                     is_moving=False  # Skip movement detection for speed
                 ))
-            
+            logger.info(f"Detected {len(targets)} targets after filtering")
             return targets[:MAX_TARGETS]  # Limit final results
             
         except Exception as e:

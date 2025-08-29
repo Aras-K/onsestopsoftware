@@ -105,7 +105,7 @@ if uploaded_files:
     # Process button
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
-        process_button = st.button("🚀 Start Processing", type="primary", use_container_width=True)
+        process_button = st.button(" Start Processing", type="primary", use_container_width=True)
     with col2:
         batch_size = st.selectbox("Batch Size", [1, 2, 4], index=1, help="Process multiple images in parallel")
     with col3:
@@ -193,13 +193,32 @@ if uploaded_files:
                         st.warning(f"⚠️ [{timestamp_str}] {original_filename}: Needs review ({confidence:.1%} confidence)")
                     else:
                         st.error(f"❌ [{timestamp_str}] {original_filename}: Failed ({confidence:.1%} confidence)")
+                    st.write(f"DEBUG - Detected targets for {original_filename}: {targets}")
+
+                    if targets.get('total', 0) == 0:
+                        st.info(f"No targets detected in {original_filename}. This could be due to:")
+                        st.write("- Image quality or contrast")
+                        st.write("- Detection thresholds need adjustment")
+                        st.write("- Radar display type not recognized")
+                    else:
+                        st.success(f"✅ Detected {targets['total']} targets in {original_filename}")
+                    
+                    all_visualizations = []
                     # Display target detection results if available
                     if result.get('success', False) and 'detected_targets' in result:
                         targets = result.get('detected_targets', {})
                         if targets.get('total', 0) > 0:
+                            all_visualizations.append({
+                                'filename': original_filename,
+                                'targets': targets,
+                                'temp_path': temp_path,
+                                'viz_image': viz_pil if 'viz_pil' in locals() else None
+                            })
+                                            
+                     
+                      
                             # Create professional visualization
                             st.markdown("### 🎯 Target Detection Analysis")
-                            
                             # Summary metrics
                             col1, col2, col3, col4 = st.columns(4)
                             with col1:
@@ -261,7 +280,12 @@ if uploaded_files:
                                                 st.error(f"⚠️ {critical} target(s) require immediate attention (< 1 NM)")
                                             if high > 0:
                                                 st.warning(f"📍 {high} target(s) require close monitoring (< 3 NM)")
-                                    
+                                            if all_visualizations:
+                                                st.markdown("### 🎯 All Target Detection Results")
+                                                for viz_data in all_visualizations:
+                                                    with st.expander(f"Targets for {viz_data['filename']} ({viz_data['targets']['total']} detected)"):
+                                                        # Display the visualization here
+                                                        pass
                                     # Save annotated image
                                     annotated_filename = f"{os.path.splitext(original_filename)[0]}_annotated.png"
                                     result['annotated_image'] = viz_pil
@@ -273,12 +297,12 @@ if uploaded_files:
                                         result['annotated_image'].save(buf, format='PNG')
                                         byte_data = buf.getvalue()
                                         
-                                        st.download_button(
-                                            label="📥 Download Annotated Image",
-                                            data=byte_data,
-                                            file_name=result['annotated_filename'],
-                                            mime="image/png"
-                                        ) 
+                                    st.download_button(
+                                        label="📥 Download Annotated Image",
+                                        data=byte_data,
+                                        file_name=result['annotated_filename'],
+                                        mime="image/png"
+                                    ) 
                             except Exception as e:
                                 logger.error(f"Visualization error: {e}")
                                 st.error("Could not generate target visualization")
