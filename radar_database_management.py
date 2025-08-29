@@ -427,12 +427,12 @@ class DatabaseManager:
                             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         """, (
                             extraction_id,
-                            target['type'],
-                            target['range_nm'],
-                            target['bearing_deg'],
-                            target.get('size_estimate', 0),
-                            target['confidence'],
-                            target.get('is_moving', False),
+                            str(target['type']),  # Convert to string
+                            float(target['range_nm']),  # Convert to Python float
+                            float(target['bearing_deg']),  # Convert to Python float
+                            float(target.get('size_estimate', 0)),  # Convert to Python float
+                            float(target['confidence']),  # Convert to Python float
+                            bool(target.get('is_moving', False)),  # Ensure boolean
                             datetime.now()
                         ))
             # Add to review queue if needed

@@ -1024,19 +1024,19 @@ class HybridRadarExtractor:
                 
                 # Add detected targets to metadata
                 analysis.metadata['detected_targets'] = {
-                    'vessels': len([t for t in detected_targets if t.target_type == TargetType.VESSEL]),
-                    'landmasses': len([t for t in detected_targets if t.target_type == TargetType.LANDMASS]),
-                    'obstacles': len([t for t in detected_targets if t.target_type == TargetType.OBSTACLE]),
-                    'unknown': len([t for t in detected_targets if t.target_type == TargetType.UNKNOWN]),
-                    'total': len(detected_targets),
+                    'vessels': int(len([t for t in detected_targets if t.target_type == TargetType.VESSEL])),
+                    'landmasses': int(len([t for t in detected_targets if t.target_type == TargetType.LANDMASS])),
+                    'obstacles': int(len([t for t in detected_targets if t.target_type == TargetType.OBSTACLE])),
+                    'unknown': int(len([t for t in detected_targets if t.target_type == TargetType.UNKNOWN])),
+                    'total': int(len(detected_targets)),
                     'targets': [
                         {
-                            'type': t.target_type.value,
-                            'range_nm': round(t.position[0], 2),
-                            'bearing_deg': round(t.position[1], 1),
-                            'confidence': round(t.confidence, 3),
-                            'size_estimate': round(t.size_estimate, 3),
-                            'is_moving': t.is_moving
+                            'type': str(t.target_type.value),
+                            'range_nm': float(round(t.position[0], 2)),
+                            'bearing_deg': float(round(t.position[1], 1)),
+                            'confidence': float(round(t.confidence, 3)),
+                            'size_estimate': float(round(t.size_estimate, 3)),
+                            'is_moving': bool(t.is_moving)
                         }
                         for t in detected_targets
                     ]

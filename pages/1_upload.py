@@ -159,15 +159,15 @@ if uploaded_files:
                     # Count extracted fields
                     fields_extracted = result.get('field_count', 0)
                     target_count = 0
-                    if 'detected_targets' in result:
+                    if result.get('success', False) and 'detected_targets' in result:
                         target_count = result.get('detected_targets', {}).get('total', 0)
 
                     results_data.append({
                         "Status": status,
-                        "Image": original_filename,  # Use original filename
+                        "Image": original_filename,
                         "Confidence": f"{confidence:.1%}",
                         "Fields": f"{fields_extracted}/26",
-                        "Targets": str(target_count),
+                        "Targets": str(target_count),  # Add this line
                         "Time": f"{result.get('processing_time', 0):.1f}s",
                         "Timestamp": extraction_timestamp,
                         "Action": action,
@@ -235,6 +235,7 @@ if uploaded_files:
                 results_df = pd.DataFrame(results_data)
                 with results_placeholder.container():
                     # Display results with timestamp
+                    # Update display_columns (around line 158)
                     display_columns = ['Status', 'Image', 'Confidence', 'Fields', 'Targets', 'Time', 'Action']
                     st.dataframe(
                         results_df[display_columns], 
