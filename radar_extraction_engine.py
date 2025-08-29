@@ -1133,7 +1133,7 @@ async def test_target_detection(image_path: str, output_dir: str = "target_detec
     """Test the complete extraction pipeline with target detection."""
     import os
     import json
-    from radar_visualization import RadarVisualization
+    from radar_visualization import EnhancedRadarVisualization
     
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
@@ -1178,7 +1178,7 @@ async def test_target_detection(image_path: str, output_dir: str = "target_detec
         
         # Create visualization
         try:
-            viz = RadarVisualization()
+            viz = EnhancedRadarVisualization()
             base_name = os.path.splitext(os.path.basename(image_path))[0]
             viz_path = os.path.join(output_dir, f"{base_name}_targets.png")
             

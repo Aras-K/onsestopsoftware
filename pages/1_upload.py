@@ -1,4 +1,4 @@
-# pages/1_Upload.py - Upload and Process Page with Original Filename Preservation
+# pages/1_Upload.py - Enhanced Upload and Process Page with Professional Target Detection
 
 import streamlit as st
 import os
@@ -9,7 +9,7 @@ from datetime import datetime
 import pandas as pd
 import time
 import logging
-from radar_visualization import RadarVisualization
+from radar_visualization import EnhancedRadarVisualization
 import cv2
 from PIL import Image
 from io import BytesIO
@@ -29,8 +29,8 @@ except ImportError as e:
 
 # Page config
 st.set_page_config(
-    page_title="Upload & Process - Radar Extraction",
-    page_icon="📤",
+    page_title="Upload & Process - Enhanced Radar Target Detection",
+    page_icon="🎯",
     layout="wide"
 )
 
@@ -62,8 +62,8 @@ if 'web_helper' not in st.session_state:
         st.stop()
 
 # Header
-st.title("📤 Upload & Process Radar Images")
-st.markdown("Upload radar screenshots for automatic data extraction and target detection")
+st.title("🎯 Enhanced Radar Target Detection System")
+st.markdown("Upload radar images for professional target detection and distance calculation")
 
 # Check API keys
 if not any(st.session_state.api_keys.values()):
@@ -79,15 +79,15 @@ if not any(st.session_state.api_keys.values()):
 
 # File uploader
 uploaded_files = st.file_uploader(
-    "Drag and drop radar images here",
+    "Drag and drop radar images here (240 images supported)",
     type=['png', 'jpg', 'jpeg', 'bmp', 'tiff'],
     accept_multiple_files=True,
-    help="Support PNG, JPG, JPEG, BMP, TIFF formats"
+    help="Support PNG, JPG, JPEG, BMP, TIFF formats. Optimized for 240 sequential images."
 )
 
 if uploaded_files:
-    st.success(f"✅ {len(uploaded_files)} image(s) ready for processing")
-    
+    st.success(f"✅ {len(uploaded_files)} radar image(s) ready for processing")
+
     # Display file info
     file_info = []
     total_size = 0
@@ -100,7 +100,7 @@ if uploaded_files:
             "Type": file.type,
             "Upload Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         })
-    
+
     with st.expander(f"📁 File Details (Total: {total_size:.2f} MB)"):
         st.dataframe(pd.DataFrame(file_info), use_container_width=True, hide_index=True)
     
@@ -193,9 +193,10 @@ if uploaded_files:
                     # Handle target detection visualization
                     if target_count > 0:
                         try:
-                            # Create visualization
-                            viz = RadarVisualization()
-                            viz_image = viz.visualize_targets(temp_path, detected_targets)
+                            # Create enhanced visualization with numbered targets
+                            viz_image, legend_info = EnhancedRadarVisualization.create_numbered_visualization(
+                                temp_path, detected_targets
+                            )
                             
                             if viz_image is not None:
                                 # Convert to PIL
@@ -207,7 +208,8 @@ if uploaded_files:
                                     'original_path': temp_path,
                                     'viz_image': viz_pil,
                                     'targets': detected_targets,
-                                    'confidence': confidence
+                                    'confidence': confidence,
+                                    'legend_info': legend_info
                                 })
                         except Exception as e:
                             logger.error(f"Error creating visualization for {original_filename}: {e}")
@@ -301,32 +303,55 @@ if uploaded_files:
                     with col4:
                         st.metric("Confidence", f"{viz_data['confidence']:.1%}")
                     
-                    # Show visualization
-                    st.image(viz_data['viz_image'], caption="Detected Targets", use_column_width=True)
-                    
-                    # Target details
+                    # Show enhanced visualization with numbered targets
+                    st.image(viz_data['viz_image'], caption="🎯 Targets with Numbers (1,2,3...) on Image", use_column_width=True)
+
+                    # Generate and display detailed target information below the image
                     if viz_data['targets'].get('targets'):
-                        target_data = []
-                        for i, target in enumerate(viz_data['targets']['targets'][:10], 1):
-                            target_data.append({
-                                "ID": i,
-                                "Type": target['type'].upper(),
-                                "Range (NM)": f"{target['range_nm']:.1f}",
-                                "Bearing (°)": f"{target['bearing_deg']:.0f}",
-                                "Confidence": f"{target['confidence']:.0%}",
-                                "Risk": _assess_risk_level(target['range_nm'])
-                            })
-                        df_targets = pd.DataFrame(target_data)
-                        st.dataframe(df_targets, use_container_width=True, hide_index=True)
-                    
-                    # Download button
+                        st.markdown("### 📊 Detailed Target Information")
+
+                        # Generate HTML table with enhanced styling
+                        html_table = EnhancedRadarVisualization.generate_target_details_table(viz_data['targets'])
+                        st.markdown(html_table, unsafe_allow_html=True)
+
+                        # Summary statistics
+                        summary_stats = EnhancedRadarVisualization.generate_summary_stats(viz_data['targets'])
+
+                        if summary_stats['total_targets'] > 0:
+                            st.markdown("### 📈 Summary Statistics")
+
+                            col1, col2, col3, col4 = st.columns(4)
+                            with col1:
+                                st.metric("🎯 Total Targets", summary_stats['total_targets'])
+                            with col2:
+                                st.metric("📏 Avg Distance", f"{summary_stats['avg_distance_nm']:.1f} NM")
+                            with col3:
+                                if summary_stats['closest_target']:
+                                    st.metric("🔥 Closest Target",
+                                             f"#{summary_stats['closest_target']['id']} ({summary_stats['closest_target']['distance_nm']:.1f} NM)")
+                            with col4:
+                                if summary_stats['farthest_target']:
+                                    st.metric("📐 Farthest Target",
+                                             f"#{summary_stats['farthest_target']['id']} ({summary_stats['farthest_target']['distance_nm']:.1f} NM)")
+
+                            # Risk distribution
+                            st.markdown("#### 🚨 Risk Assessment")
+                            risk_cols = st.columns(len([r for r in summary_stats['risk_distribution'].values() if r > 0]))
+                            for i, (risk_level, count) in enumerate(summary_stats['risk_distribution'].items()):
+                                if count > 0:
+                                    with risk_cols[i % len(risk_cols)]:
+                                        risk_colors = {'CRITICAL': '🔴', 'HIGH': '🟠', 'MEDIUM': '🟡', 'LOW': '🟢', 'SAFE': '🔵'}
+                                        st.metric(f"{risk_colors.get(risk_level, '⚪')} {risk_level}", count)
+
+                    # Download button for enhanced visualization
                     buf = BytesIO()
                     viz_data['viz_image'].save(buf, format='PNG')
                     st.download_button(
-                        label="📥 Download Annotated Image",
+                        label="📥 Download Enhanced Visualization",
                         data=buf.getvalue(),
-                        file_name=f"{os.path.splitext(viz_data['filename'])[0]}_annotated.png",
-                        mime="image/png"
+                        file_name=f"{os.path.splitext(viz_data['filename'])[0]}_enhanced_targets.png",
+                        mime="image/png",
+                        help="Download image with numbered targets and professional annotations"
                     )
                     
 else:
