@@ -29,11 +29,11 @@ from radar_extraction_architecture import (
 )
 logger = logging.getLogger(__name__)
 try:
-    from radar_target_detection import RadarTargetDetector, TargetType
+    from radar_target_detection import YOLORadarDetector, TargetType
     TARGET_DETECTION_AVAILABLE = True
 except ImportError:
     logger.warning("Target detection module not available")
-    RadarTargetDetector = None
+    YOLORadarDetector = None
     TargetType = None
     TARGET_DETECTION_AVAILABLE = False
 # Configure logging with detailed formatting
@@ -642,7 +642,6 @@ class ConfidenceScorer:
             confidence *= 0.9
         
         return min(max(confidence, 0.0), 1.0)
-
 class HybridRadarExtractor:
     """Main extraction engine that coordinates all methods."""
     
@@ -658,10 +657,10 @@ class HybridRadarExtractor:
 
         if TARGET_DETECTION_AVAILABLE:
             try:
-                self.target_detector = RadarTargetDetector()
-                logger.info("Target detection system initialized")
+                self.target_detector = YOLORadarDetector()
+                logger.info("YOLO target detection initialized")
             except Exception as e:
-                logger.warning(f"Failed to initialize target detector: {e}")
+                logger.warning(f"Failed to initialize YOLO: {e}")
         # Check if learning system is available (optional)
         self.learning_system = None
         self.adaptive_engine = None
