@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 
 class TargetType(Enum):
     VESSEL = "vessel"
-    LANDMASS = "landmass"
-    OBSTACLE = "obstacle"
+    LANDMASS = "land"
+    OWNVESSEL = "ownvessel"
     UNKNOWN = "unknown"
 
 @dataclass
@@ -42,7 +42,7 @@ class EnhancedRadarDetector:
         try:
             from ultralytics import YOLO
             if model_path:
-                self.model = YOLO(model_path)
+                self.model = YOLO("/Users/aras.koplanto/Documents/OneStop/onsestopsoftware/best.pt")
             else:
                 self.model = YOLO('yolov8n.pt')
             self.yolo_available = True
